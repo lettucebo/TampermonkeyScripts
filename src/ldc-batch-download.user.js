@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.1.0
+// @version      0.1.1
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -50,7 +50,9 @@
 
         function setToken(t) {
             if (!t || t === currentToken) return;
+            const wasNull = currentToken === null;
             currentToken = t;
+            if (wasNull) try { console.info('[LDC] auth token captured'); } catch (_) {}
             if (resolveReady) { resolveReady(t); resolveReady = null; }
             tokenChangedListeners.forEach((fn) => { try { fn(t); } catch (_) {} });
         }
@@ -697,23 +699,33 @@
                 paused: false,
                 pauseReason: null,
             };
+            try { console.info(`[LDC] queue starting: ${tasks.length} files, ${state.bytesTotal} bytes total, concurrency=${state.concurrency}`); } catch (_) {}
             emit({ type: 'queue-start', state });
 
-            // Try to acquire multi-tab lock
+            // Try to acquire multi-tab lock.
+            //
+            // navigator.locks.request resolves only when its callback returns, and
+            // we want the callback to keep holding the lock for the whole batch.
+            // So we split into two promises: one signals "lock acquired" so the
+            // caller can proceed, and another one ("released") keeps the callback
+            // alive until we explicitly release the lock in the finally block.
             let releaseLock = () => {};
             if (navigator.locks && typeof navigator.locks.request === 'function') {
-                let lockResolved = false;
-                await navigator.locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => {
-                    if (!lock) {
-                        emit({ type: 'queue-busy' });
-                        running = false;
-                        throw new Error('Another tab is already running a batch download. Close it or wait, then try again.');
-                    }
-                    lockResolved = true;
-                    await new Promise((res) => { releaseLock = res; });
-                }).catch((e) => {
-                    if (!lockResolved) throw e;
-                });
+                let signalAcquired;
+                const acquired = new Promise((r) => { signalAcquired = r; });
+                const released = new Promise((r) => { releaseLock = r; });
+                navigator.locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => {
+                    signalAcquired(!!lock);
+                    if (!lock) return;
+                    await released;
+                }).catch(() => signalAcquired(false));
+                const got = await acquired;
+                if (!got) {
+                    running = false;
+                    emit({ type: 'queue-busy' });
+                    throw new Error('Another tab is already running a batch download. Close it or wait, then try again.');
+                }
+                try { console.info('[LDC] navigator.locks acquired'); } catch (_) {}
             }
 
             try {
@@ -751,6 +763,7 @@
                 const workers = [];
                 for (let i = 0; i < state.concurrency; i++) workers.push(next());
                 await Promise.all(workers);
+                try { console.info(`[LDC] queue finished: done=${state.done}, failed=${state.failed}, skipped=${state.skipped}, paused=${state.paused}`); } catch (_) {}
                 emit({ type: state.paused ? 'queue-paused-end' : 'queue-end', state });
             } finally {
                 running = false;
@@ -1065,12 +1078,26 @@
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
                 cb.addEventListener(evt, (e) => e.stopPropagation());
             });
-            cb.addEventListener('change', () => {
+            cb.addEventListener('change', (e) => {
+                e.stopPropagation();
                 if (cb.checked) selection.add(id); else selection.remove(id);
             });
             const wrap = el('span', { class: 'ldc-row-wrap' }, [cb]);
-            // Insert as previous sibling (outside the toggle's clickable area).
-            toggleEl.parentNode?.insertBefore(wrap, toggleEl);
+            ['click', 'mousedown', 'keydown'].forEach((evt) => {
+                wrap.addEventListener(evt, (e) => e.stopPropagation());
+            });
+            // The toggle <div role="button"> is itself flex, and its first child is an
+            // inner `<div class="flex items-center">` containing the chevron + title.
+            // Inserting our checkbox into THAT inner flex (before the chevron) keeps
+            // it on the same line and aligns vertically. stopPropagation prevents the
+            // checkbox from triggering the toggle's expand/collapse.
+            const innerFlex = toggleEl.querySelector(':scope > div.flex.items-center')
+                || toggleEl.querySelector('.flex.items-center');
+            if (innerFlex) {
+                innerFlex.insertBefore(wrap, innerFlex.firstChild);
+            } else {
+                toggleEl.insertBefore(wrap, toggleEl.firstChild);
+            }
         }
 
         function refreshAllCheckboxes() {
@@ -1137,6 +1164,13 @@
 
         function showPanel() { panel.classList.remove('ldc-hidden'); }
 
+        let renderPending = false;
+        function scheduleRender() {
+            if (renderPending) return;
+            renderPending = true;
+            requestAnimationFrame(() => { renderPending = false; renderPanel(); });
+        }
+
         function renderPanel() {
             const s = orchestrator.state;
             if (!s) return;
@@ -1163,7 +1197,7 @@
 
         return {
             injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, refreshAllCheckboxes,
-            buildPanel, showPanel, renderPanel, showPreflight, showToast,
+            buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
             get bar() { return bar; },
             get btnFolder() { return btnFolder; },
             get btnSelectAll() { return btnSelectAll; },
@@ -1187,6 +1221,7 @@
         lookup = treeIndex.buildLookup(tree);
         ui.setLookup(lookup);
         lookupReady(lookup);
+        try { console.info(`[LDC] course lookup built: ${lookup.size} course rows`); } catch (_) {}
         return lookup;
     }
 
