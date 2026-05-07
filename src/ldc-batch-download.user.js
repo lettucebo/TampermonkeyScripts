@@ -1,0 +1,1360 @@
+// ==UserScript==
+// @name         LDC Batch Downloader
+// @name:zh-TW   LDC 批次下載
+// @namespace    https://github.com/lettucebo/LDC-Tools
+// @version      0.1.0
+// @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
+// @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
+// @author       lettucebo
+// @match        https://learningdownloadcenter.microsoft.com/*
+// @run-at       document-start
+// @grant        unsafeWindow
+// @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
+// @grant        GM.getValue
+// @grant        GM.setValue
+// @license      MIT
+// @homepageURL  https://github.com/lettucebo/LDC-Tools
+// @supportURL   https://github.com/lettucebo/LDC-Tools/issues
+// ==/UserScript==
+
+/* eslint-disable no-undef */
+(() => {
+    'use strict';
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 0. Constants
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const APP_ID = 'ldc-batch-downloader';
+    const LOCK_NAME = 'ldc-batch-download';
+    const IDB_NAME = 'ldc-batch-downloader';
+    const IDB_STORE = 'state';
+    const IDB_KEY_ROOT_HANDLE = 'rootDirHandle';
+    const DEFAULT_CONCURRENCY = 2;
+    const MAX_CONCURRENCY = 4;
+    const MAX_FILENAME_LEN = 150;
+    const RETRY_DELAYS_MS = [1000, 3000, 9000];
+    const TOKEN_REFRESH_MARGIN_SEC = 60;
+    const TOKEN_REFRESH_TIMEOUT_MS = 30000;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1. Token interception (must run synchronously at document-start)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const tokenInterceptor = (() => {
+        let currentToken = null;
+        let tokenChangedListeners = [];
+        let resolveReady;
+        const tokenReady = new Promise((r) => { resolveReady = r; });
+
+        function setToken(t) {
+            if (!t || t === currentToken) return;
+            currentToken = t;
+            if (resolveReady) { resolveReady(t); resolveReady = null; }
+            tokenChangedListeners.forEach((fn) => { try { fn(t); } catch (_) {} });
+        }
+
+        function isApiUrl(u) {
+            try {
+                const url = new URL(u, location.href);
+                return url.host === location.host && url.pathname.startsWith('/api/');
+            } catch (_) { return false; }
+        }
+
+        function extractFromHeaders(headers) {
+            if (!headers) return null;
+            try {
+                if (headers instanceof Headers) {
+                    return headers.get('Authorization') || headers.get('authorization');
+                }
+                if (Array.isArray(headers)) {
+                    const m = headers.find(([k]) => String(k).toLowerCase() === 'authorization');
+                    return m ? m[1] : null;
+                }
+                if (typeof headers === 'object') {
+                    for (const k of Object.keys(headers)) {
+                        if (k.toLowerCase() === 'authorization') return headers[k];
+                    }
+                }
+            } catch (_) {}
+            return null;
+        }
+
+        function install() {
+            const w = unsafeWindow;
+            // Hook fetch
+            const origFetch = w.fetch;
+            if (origFetch && !origFetch.__ldcWrapped) {
+                const wrapped = function (input, init) {
+                    try {
+                        const url = (typeof input === 'string') ? input : (input && input.url);
+                        if (isApiUrl(url)) {
+                            let auth = null;
+                            if (init && init.headers) auth = extractFromHeaders(init.headers);
+                            if (!auth && input && input.headers) auth = extractFromHeaders(input.headers);
+                            if (auth && auth.startsWith('Bearer ')) setToken(auth.slice('Bearer '.length));
+                        }
+                    } catch (_) {}
+                    return origFetch.apply(this, arguments);
+                };
+                wrapped.__ldcWrapped = true;
+                w.fetch = wrapped;
+            }
+            // Hook XHR.setRequestHeader (defensive — site uses fetch but be safe)
+            const XHRProto = w.XMLHttpRequest && w.XMLHttpRequest.prototype;
+            if (XHRProto && !XHRProto.setRequestHeader.__ldcWrapped) {
+                const origOpen = XHRProto.open;
+                const origSet = XHRProto.setRequestHeader;
+                XHRProto.open = function (method, url) {
+                    this.__ldcUrl = url;
+                    return origOpen.apply(this, arguments);
+                };
+                const wrappedSet = function (name, value) {
+                    try {
+                        if (String(name).toLowerCase() === 'authorization' &&
+                            isApiUrl(this.__ldcUrl) &&
+                            typeof value === 'string' && value.startsWith('Bearer ')) {
+                            setToken(value.slice('Bearer '.length));
+                        }
+                    } catch (_) {}
+                    return origSet.apply(this, arguments);
+                };
+                wrappedSet.__ldcWrapped = true;
+                XHRProto.setRequestHeader = wrappedSet;
+            }
+        }
+
+        function decodeJwtExp(token) {
+            try {
+                const parts = (token || '').split('.');
+                if (parts.length < 2) return null;
+                // JWE (5 parts) cannot be decoded client-side; treat as opaque
+                if (parts.length === 5) return null;
+                const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+                return typeof payload.exp === 'number' ? payload.exp : null;
+            } catch (_) { return null; }
+        }
+
+        async function awaitFreshToken({ marginSec = TOKEN_REFRESH_MARGIN_SEC, timeoutMs = TOKEN_REFRESH_TIMEOUT_MS } = {}) {
+            await tokenReady;
+            const exp = decodeJwtExp(currentToken);
+            if (exp === null) return currentToken; // opaque (JWE) — let server tell us via 401
+            const nowSec = Math.floor(Date.now() / 1000);
+            if (exp - nowSec > marginSec) return currentToken;
+
+            // Token is near-expiry. Wait for a new token to arrive (SPA refresh).
+            const tokenAtStart = currentToken;
+            return new Promise((resolve, reject) => {
+                const t0 = Date.now();
+                const onChange = (newToken) => {
+                    if (newToken && newToken !== tokenAtStart) {
+                        tokenChangedListeners = tokenChangedListeners.filter((f) => f !== onChange);
+                        clearInterval(timer);
+                        resolve(newToken);
+                    }
+                };
+                tokenChangedListeners.push(onChange);
+                const timer = setInterval(() => {
+                    if (Date.now() - t0 > timeoutMs) {
+                        tokenChangedListeners = tokenChangedListeners.filter((f) => f !== onChange);
+                        clearInterval(timer);
+                        reject(new TokenExpiredError('Auth token near expiry and no refresh seen. Please reload the page.'));
+                    }
+                }, 500);
+            });
+        }
+
+        return { install, get currentToken() { return currentToken; }, tokenReady, awaitFreshToken, decodeJwtExp };
+    })();
+
+    // Install hooks IMMEDIATELY — before SPA bundle runs.
+    tokenInterceptor.install();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2. Custom error types
+    // ─────────────────────────────────────────────────────────────────────────
+
+    class HttpError extends Error {
+        constructor(message, { status, kind, retryAfterSec } = {}) {
+            super(message);
+            this.name = 'HttpError';
+            this.status = status;
+            this.kind = kind;
+            this.retryAfterSec = retryAfterSec;
+        }
+    }
+    class TokenExpiredError extends Error {
+        constructor(message) { super(message); this.name = 'TokenExpiredError'; }
+    }
+    class FsaPermissionError extends Error {
+        constructor(message) { super(message); this.name = 'FsaPermissionError'; }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3. API client
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const api = (() => {
+        async function authHeaders() {
+            await tokenInterceptor.tokenReady;
+            const t = tokenInterceptor.currentToken;
+            if (!t) throw new TokenExpiredError('No auth token captured yet. Please wait or reload the page.');
+            return { Authorization: `Bearer ${t}` };
+        }
+
+        function classifyResponse(resp) {
+            const status = resp.status;
+            if (status === 401) return new HttpError('Unauthorized', { status, kind: '401' });
+            if (status === 403) return new HttpError('Forbidden', { status, kind: '403' });
+            if (status === 429) {
+                const ra = parseInt(resp.headers.get('retry-after') || '0', 10) || null;
+                return new HttpError('Rate limited', { status, kind: '429', retryAfterSec: ra });
+            }
+            if (status >= 500 && status < 600) return new HttpError(`Server error ${status}`, { status, kind: '5xx' });
+            return new HttpError(`HTTP ${status}`, { status, kind: 'http' });
+        }
+
+        async function getSearchTree(signal) {
+            const headers = await authHeaders();
+            const resp = await unsafeWindow.fetch('/api/search', { headers, signal, credentials: 'include' });
+            if (!resp.ok) throw classifyResponse(resp);
+            return resp.json();
+        }
+
+        async function downloadStream(blobPath, versionId, signal) {
+            await tokenInterceptor.awaitFreshToken();
+            const headers = await authHeaders();
+            const params = new URLSearchParams();
+            params.set('blobPath', blobPath);
+            if (versionId) params.set('versionId', versionId);
+            const url = `/api/download?${params.toString()}`;
+            let resp;
+            try {
+                resp = await unsafeWindow.fetch(url, { headers, signal, credentials: 'include' });
+            } catch (e) {
+                if (e && e.name === 'AbortError') throw e;
+                throw new HttpError(`Network error: ${e && e.message}`, { kind: 'network' });
+            }
+            if (!resp.ok) {
+                // Drain body so connection isn't held
+                try { await resp.body?.cancel(); } catch (_) {}
+                throw classifyResponse(resp);
+            }
+            return resp;
+        }
+
+        return { getSearchTree, downloadStream };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 4. courseParser (pure)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const courseParser = (() => {
+        // Split "AZ-040T00: Automate Administration with PowerShell (Japanese)"
+        // → { code, title, languageHint }
+        function parseRowName(name) {
+            if (!name || typeof name !== 'string') return { code: '', title: '', languageHint: null };
+            const idx = name.indexOf(':');
+            let code, rest;
+            if (idx === -1) { code = ''; rest = name.trim(); }
+            else { code = name.slice(0, idx).trim(); rest = name.slice(idx + 1).trim(); }
+            const { title, languageHint } = stripLanguageSuffix(rest);
+            return { code, title, languageHint };
+        }
+
+        function stripLanguageSuffix(title) {
+            if (!title) return { title: '', languageHint: null };
+            const m = title.match(/^(.*)\s*\(([^()]+)\)\s*$/);
+            if (m) return { title: m[1].trim(), languageHint: m[2].trim() };
+            return { title: title.trim(), languageHint: null };
+        }
+
+        // file.language examples: "Japanese (ja-jp)", "English", "Chinese Simplified (zh-cn)"
+        function resolveLanguage(file) {
+            const raw = file && file.language;
+            if (!raw) return 'Unknown';
+            const m = raw.match(/^(.*?)\s*\([a-z]{2,3}-[a-z]{2,4}\)\s*$/i);
+            return (m ? m[1] : raw).trim();
+        }
+
+        // Take a blob URL like "Azure/AZ-040T00: Automate Administration with PowerShell (Japanese)/file.zip"
+        // and return the canonical course folder name from the second segment, with ": " → " ".
+        function canonicalCourseDirName(blobUrl) {
+            if (!blobUrl) return '';
+            const segs = String(blobUrl).split('/');
+            // Use second-to-last directory if multi-level, else first segment.
+            // Typical structure: <category>/<courseRow>/<file>
+            if (segs.length < 2) return segs[0] || '';
+            const courseSeg = segs[segs.length - 2]; // the directory containing the file
+            const { code, title } = parseRowName(courseSeg);
+            if (code) return title ? `${code} ${title}` : code;
+            return courseSeg.replace(/:\s*/g, ' ');
+        }
+
+        return { parseRowName, stripLanguageSuffix, resolveLanguage, canonicalCourseDirName };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 5. pathSanitizer (pure)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const pathSanitizer = (() => {
+        const WIN_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+        const ILLEGAL = /[<>:"/\\|?*\x00-\x1F]/g;
+
+        function shortHash(s) {
+            // FNV-1a 32-bit, base36, 8 chars max (deterministic, no crypto needed)
+            let h = 0x811c9dc5;
+            for (let i = 0; i < s.length; i++) {
+                h ^= s.charCodeAt(i);
+                h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+            }
+            return h.toString(36).slice(0, 8);
+        }
+
+        function sanitizeSegment(name) {
+            if (!name) return '_';
+            let s = String(name).replace(ILLEGAL, '-');
+            s = s.replace(/[\s.]+$/g, '').replace(/^\s+/, '');
+            if (!s) s = '_';
+            if (WIN_RESERVED.test(s)) s = '_' + s;
+            if (s.length > MAX_FILENAME_LEN) {
+                // Split at last dot (if it's an extension worth preserving)
+                const dot = s.lastIndexOf('.');
+                if (dot > 0 && s.length - dot <= 10) {
+                    const base = s.slice(0, dot);
+                    const ext = s.slice(dot);
+                    const trim = base.slice(0, MAX_FILENAME_LEN - ext.length - 9);
+                    s = `${trim}-${shortHash(name)}${ext}`;
+                } else {
+                    s = `${s.slice(0, MAX_FILENAME_LEN - 9)}-${shortHash(name)}`;
+                }
+            }
+            return s;
+        }
+
+        function buildRelPath(parent, sub, fileName) {
+            return [parent, sub, fileName].map(sanitizeSegment);
+        }
+
+        return { sanitizeSegment, buildRelPath, shortHash };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 6. tree (build lookup from /api/search response)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const treeIndex = (() => {
+        // Returns Map<rowName, { rowName, files, courseCode, courseTitle, languageHint, parentDirName }>
+        function buildLookup(searchTree) {
+            const map = new Map();
+            if (!Array.isArray(searchTree)) return map;
+            for (const cat of searchTree) {
+                const catDirs = (cat && cat.directories) || [];
+                for (const node of catDirs) {
+                    if (!node || !node.name) continue;
+                    const files = Array.isArray(node.files) ? node.files : [];
+                    if (files.length === 0) continue;
+                    const { code, title, languageHint } = courseParser.parseRowName(node.name);
+                    // Canonical course dir name from blob path of first file (more reliable than DOM title).
+                    let parentDirName = code && title ? `${code} ${title}` : (node.name || '').replace(/:\s*/g, ' ');
+                    if (files[0] && files[0].url) {
+                        const fromBlob = courseParser.canonicalCourseDirName(files[0].url);
+                        if (fromBlob) parentDirName = fromBlob;
+                    }
+                    map.set(node.name, {
+                        rowName: node.name,
+                        files,
+                        courseCode: code,
+                        courseTitle: title,
+                        languageHint,
+                        parentDirName,
+                    });
+                }
+            }
+            return map;
+        }
+
+        function classifyAriaRow(label, lookup) {
+            // aria-label e.g. "Toggle AZ-040T00: ... directory" or "Toggle Azure directory"
+            const m = String(label || '').match(/^Toggle (.+) directory$/);
+            if (!m) return { kind: 'unknown', name: null };
+            const name = m[1];
+            if (lookup.has(name)) return { kind: 'course', name };
+            return { kind: 'category', name };
+        }
+
+        return { buildLookup, classifyAriaRow };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 7. IndexedDB storage (FileSystemDirectoryHandle persistence)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const idb = (() => {
+        function open() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(IDB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    req.result.createObjectStore(IDB_STORE);
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+        async function get(key) {
+            const db = await open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readonly');
+                const req = tx.objectStore(IDB_STORE).get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+        async function set(key, value) {
+            const db = await open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).put(value, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+        async function del(key) {
+            const db = await open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).delete(key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+        return { get, set, del };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 8. FSA writer
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const fsaWriter = (() => {
+        let cachedRoot = null;
+
+        async function loadCachedRoot() {
+            if (cachedRoot) return cachedRoot;
+            try {
+                const h = await idb.get(IDB_KEY_ROOT_HANDLE);
+                if (h && typeof h.queryPermission === 'function') cachedRoot = h;
+            } catch (_) {}
+            return cachedRoot;
+        }
+
+        async function queryPermission(handle) {
+            try { return await handle.queryPermission({ mode: 'readwrite' }); }
+            catch (_) { return 'denied'; }
+        }
+
+        // Must be called from a user-gesture handler.
+        async function pickRoot() {
+            if (!('showDirectoryPicker' in window)) {
+                throw new FsaPermissionError('Your browser does not support File System Access API. Use Chrome, Edge, or another Chromium-based browser.');
+            }
+            const handle = await unsafeWindow.showDirectoryPicker({ id: 'ldc-root', mode: 'readwrite', startIn: 'documents' });
+            cachedRoot = handle;
+            try { await idb.set(IDB_KEY_ROOT_HANDLE, handle); } catch (_) {}
+            return handle;
+        }
+
+        // Must be called from a user-gesture handler if permission is 'prompt'/'denied'.
+        async function ensurePermission(handle) {
+            if (!handle) throw new FsaPermissionError('No folder selected.');
+            const p1 = await queryPermission(handle);
+            if (p1 === 'granted') return true;
+            try {
+                const p2 = await handle.requestPermission({ mode: 'readwrite' });
+                if (p2 === 'granted') return true;
+                throw new FsaPermissionError('Permission to write to selected folder was not granted.');
+            } catch (e) {
+                if (e instanceof FsaPermissionError) throw e;
+                throw new FsaPermissionError(`Could not request folder permission: ${e && e.message}`);
+            }
+        }
+
+        async function getDirHandle(rootHandle, segments) {
+            let dir = rootHandle;
+            for (const seg of segments) {
+                const safe = pathSanitizer.sanitizeSegment(seg);
+                try { dir = await dir.getDirectoryHandle(safe, { create: true }); }
+                catch (e) {
+                    if (e && e.name === 'NotAllowedError') throw new FsaPermissionError('Folder permission was revoked. Please choose the folder again.');
+                    throw e;
+                }
+            }
+            return dir;
+        }
+
+        async function existingFileSize(dirHandle, fileName) {
+            const safe = pathSanitizer.sanitizeSegment(fileName);
+            try {
+                const fh = await dirHandle.getFileHandle(safe);
+                const f = await fh.getFile();
+                return f.size;
+            } catch (e) {
+                if (e && (e.name === 'NotFoundError' || e.name === 'NotAllowedError')) return null;
+                return null;
+            }
+        }
+
+        async function writeStream(dirHandle, fileName, response, signal, onProgress) {
+            const safe = pathSanitizer.sanitizeSegment(fileName);
+            let fh;
+            try { fh = await dirHandle.getFileHandle(safe, { create: true }); }
+            catch (e) {
+                if (e && e.name === 'NotAllowedError') throw new FsaPermissionError('Folder permission was revoked. Please choose the folder again.');
+                throw e;
+            }
+            const writable = await fh.createWritable();
+            try {
+                if (response.body && typeof response.body.getReader === 'function' && onProgress) {
+                    const reader = response.body.getReader();
+                    let received = 0;
+                    while (true) {
+                        if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        await writable.write(value);
+                        received += value.byteLength;
+                        try { onProgress(received); } catch (_) {}
+                    }
+                } else if (response.body && response.body.pipeTo) {
+                    await response.body.pipeTo(writable, { signal });
+                    return;
+                } else {
+                    const blob = await response.blob();
+                    await writable.write(blob);
+                }
+                await writable.close();
+            } catch (e) {
+                try { await writable.abort(); } catch (_) {}
+                throw e;
+            }
+        }
+
+        async function clearCachedRoot() {
+            cachedRoot = null;
+            try { await idb.del(IDB_KEY_ROOT_HANDLE); } catch (_) {}
+        }
+
+        return { loadCachedRoot, queryPermission, pickRoot, ensurePermission, getDirHandle, existingFileSize, writeStream, clearCachedRoot, get cachedRoot() { return cachedRoot; } };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 9. Selection store (stable IDs)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const selection = (() => {
+        const set = new Set();
+        const listeners = new Set();
+        function notify() { for (const l of listeners) { try { l(); } catch (_) {} } }
+        function rowId(rowName) { return rowName; } // rowName is unique enough
+        return {
+            has: (id) => set.has(id),
+            add: (id) => { if (!set.has(id)) { set.add(id); notify(); } },
+            remove: (id) => { if (set.has(id)) { set.delete(id); notify(); } },
+            toggle: (id) => { if (set.has(id)) set.delete(id); else set.add(id); notify(); },
+            clear: () => { if (set.size) { set.clear(); notify(); } },
+            ids: () => [...set],
+            size: () => set.size,
+            onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+            rowId,
+        };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 10. Orchestrator (queue + retry + checkpoint)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const orchestrator = (() => {
+        let abortController = null;
+        let running = false;
+        let listeners = new Set();
+        let state = null;
+        let concurrencyOverride = null;
+
+        function emit(event) {
+            for (const l of listeners) { try { l(event); } catch (_) {} }
+        }
+
+        function buildPlan(selectedRowNames, lookup) {
+            const tasks = [];
+            for (const rowName of selectedRowNames) {
+                const node = lookup.get(rowName);
+                if (!node) continue;
+                const language = node.languageHint || courseParser.resolveLanguage(node.files[0] || {});
+                const subDirName = node.courseCode ? `${node.courseCode}-${language}` : language;
+                for (const f of node.files) {
+                    const fileLang = courseParser.resolveLanguage(f) || language;
+                    const fileSub = node.courseCode ? `${node.courseCode}-${fileLang}` : fileLang;
+                    tasks.push({
+                        id: `${rowName}::${f.name}`,
+                        rowName,
+                        courseCode: node.courseCode,
+                        parentDir: node.parentDirName,
+                        subDir: fileSub,
+                        fileName: f.name,
+                        blobPath: f.url,
+                        versionId: f.versionId,
+                        size: f.size || 0,
+                        status: 'pending', // pending | downloading | retrying | skipped | failed | done
+                        bytes: 0,
+                        attempts: 0,
+                        error: null,
+                    });
+                }
+            }
+            return tasks;
+        }
+
+        function totalBytes(tasks) {
+            return tasks.reduce((a, t) => a + (t.size || 0), 0);
+        }
+
+        async function runTask(task, rootHandle, signal) {
+            task.status = 'downloading';
+            task.attempts += 1;
+            emit({ type: 'task-start', task });
+            const dir = await fsaWriter.getDirHandle(rootHandle, [task.parentDir, task.subDir]);
+            // Skip-existing check
+            const existing = await fsaWriter.existingFileSize(dir, task.fileName);
+            if (existing !== null && task.size > 0 && existing === task.size) {
+                task.status = 'skipped';
+                task.bytes = existing;
+                emit({ type: 'task-skipped', task });
+                return;
+            }
+            const resp = await api.downloadStream(task.blobPath, task.versionId, signal);
+            await fsaWriter.writeStream(dir, task.fileName, resp, signal, (received) => {
+                task.bytes = received;
+                emit({ type: 'task-progress', task });
+            });
+            task.status = 'done';
+            emit({ type: 'task-done', task });
+        }
+
+        async function runWithRetry(task, rootHandle, signal) {
+            const maxAttempts = RETRY_DELAYS_MS.length + 1; // initial + retries
+            let lastErr;
+            while (task.attempts < maxAttempts) {
+                try {
+                    await runTask(task, rootHandle, signal);
+                    return;
+                } catch (e) {
+                    lastErr = e;
+                    if (e && e.name === 'AbortError') throw e;
+                    // 401 → propagate to outer to pause whole queue
+                    if (e instanceof HttpError && e.kind === '401') throw new TokenExpiredError('Session expired (401). Please reload the page.');
+                    if (e instanceof TokenExpiredError) throw e;
+                    if (e instanceof FsaPermissionError) throw e;
+                    // 403 → fail without retry
+                    if (e instanceof HttpError && e.kind === '403') break;
+                    // Otherwise (429 / 5xx / network) retry
+                    if (task.attempts >= maxAttempts) break;
+                    const baseDelay = RETRY_DELAYS_MS[task.attempts - 1] || 9000;
+                    const retryAfter = (e instanceof HttpError && e.retryAfterSec) ? e.retryAfterSec * 1000 : 0;
+                    const delay = Math.max(baseDelay, retryAfter);
+                    if (e instanceof HttpError && e.kind === '429') {
+                        state.concurrency = 1; // drop globally
+                        emit({ type: 'rate-limited', delay });
+                    }
+                    task.status = 'retrying';
+                    task.error = e.message;
+                    emit({ type: 'task-retrying', task, delay });
+                    await new Promise((r) => setTimeout(r, delay));
+                    if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                }
+            }
+            task.status = 'failed';
+            task.error = (lastErr && lastErr.message) || 'unknown error';
+            emit({ type: 'task-failed', task });
+        }
+
+        async function runQueue(tasks, rootHandle) {
+            if (running) throw new Error('Already running');
+            running = true;
+            abortController = new AbortController();
+            const signal = abortController.signal;
+            state = {
+                tasks,
+                total: tasks.length,
+                done: 0,
+                failed: 0,
+                skipped: 0,
+                bytesTotal: totalBytes(tasks),
+                bytesDone: 0,
+                concurrency: concurrencyOverride || DEFAULT_CONCURRENCY,
+                startedAt: Date.now(),
+                paused: false,
+                pauseReason: null,
+            };
+            emit({ type: 'queue-start', state });
+
+            // Try to acquire multi-tab lock
+            let releaseLock = () => {};
+            if (navigator.locks && typeof navigator.locks.request === 'function') {
+                let lockResolved = false;
+                await navigator.locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => {
+                    if (!lock) {
+                        emit({ type: 'queue-busy' });
+                        running = false;
+                        throw new Error('Another tab is already running a batch download. Close it or wait, then try again.');
+                    }
+                    lockResolved = true;
+                    await new Promise((res) => { releaseLock = res; });
+                }).catch((e) => {
+                    if (!lockResolved) throw e;
+                });
+            }
+
+            try {
+                let idx = 0;
+                const next = async () => {
+                    while (true) {
+                        if (signal.aborted) return;
+                        const myIdx = idx++;
+                        if (myIdx >= tasks.length) return;
+                        const task = tasks[myIdx];
+                        try {
+                            await runWithRetry(task, rootHandle, signal);
+                            if (task.status === 'done') state.done++;
+                            else if (task.status === 'skipped') { state.skipped++; state.done++; }
+                            else if (task.status === 'failed') state.failed++;
+                            state.bytesDone += (task.bytes || 0);
+                        } catch (e) {
+                            if (e instanceof TokenExpiredError || e instanceof FsaPermissionError) {
+                                abortController.abort();
+                                state.paused = true;
+                                state.pauseReason = e.message;
+                                emit({ type: 'queue-paused', error: e });
+                                return;
+                            }
+                            if (e && e.name === 'AbortError') return;
+                            // Unexpected — mark task failed
+                            task.status = 'failed';
+                            task.error = e && e.message;
+                            state.failed++;
+                            emit({ type: 'task-failed', task });
+                        }
+                        emit({ type: 'queue-progress', state });
+                    }
+                };
+                const workers = [];
+                for (let i = 0; i < state.concurrency; i++) workers.push(next());
+                await Promise.all(workers);
+                emit({ type: state.paused ? 'queue-paused-end' : 'queue-end', state });
+            } finally {
+                running = false;
+                releaseLock();
+            }
+        }
+
+        async function retryFailed(rootHandle) {
+            if (!state) return;
+            const failed = state.tasks.filter((t) => t.status === 'failed');
+            if (failed.length === 0) return;
+            for (const t of failed) { t.status = 'pending'; t.attempts = 0; t.error = null; }
+            state.failed -= failed.length;
+            await runQueue(failed, rootHandle); // creates new state — caller should wire UI accordingly
+        }
+
+        function cancel() { if (abortController) abortController.abort(); }
+        function setConcurrency(n) {
+            const v = Math.max(1, Math.min(MAX_CONCURRENCY, parseInt(n, 10) || DEFAULT_CONCURRENCY));
+            concurrencyOverride = v;
+        }
+        function getConcurrency() { return concurrencyOverride || DEFAULT_CONCURRENCY; }
+
+        return {
+            buildPlan, runQueue, retryFailed, cancel, setConcurrency, getConcurrency,
+            on: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+            get state() { return state; },
+            get isRunning() { return running; },
+        };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 11. UI
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const ui = (() => {
+        const STYLE = `
+            #ldc-bar {
+                position: sticky;
+                top: 0;
+                z-index: 9999;
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                padding: 8px 12px;
+                background: #0078d4;
+                color: white;
+                border-bottom: 2px solid #005a9e;
+                font-family: 'Segoe UI', Roboto, sans-serif;
+                font-size: 13px;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            }
+            #ldc-bar button, #ldc-bar select {
+                padding: 6px 12px;
+                border-radius: 4px;
+                border: none;
+                cursor: pointer;
+                font: inherit;
+                color: #0078d4;
+                background: white;
+            }
+            #ldc-bar button:hover:not(:disabled) { background: #f0f6fc; }
+            #ldc-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+            #ldc-bar .ldc-spacer { flex: 1; }
+            #ldc-bar .ldc-status { font-size: 12px; opacity: 0.9; }
+            #ldc-bar .ldc-folder { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.95; }
+            #ldc-bar .ldc-primary { background: #ffd700; color: #333; font-weight: 600; }
+            #ldc-bar .ldc-primary:hover:not(:disabled) { background: #ffea4d; }
+
+            .ldc-row-checkbox {
+                width: 18px; height: 18px;
+                margin-right: 6px;
+                vertical-align: middle;
+                cursor: pointer;
+                accent-color: #0078d4;
+            }
+            .ldc-row-wrap {
+                display: inline-flex;
+                align-items: center;
+                margin-right: 4px;
+            }
+
+            #ldc-progress {
+                position: fixed;
+                bottom: 16px;
+                right: 16px;
+                width: 420px;
+                max-height: 70vh;
+                background: white;
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+                font-family: 'Segoe UI', Roboto, sans-serif;
+                font-size: 12px;
+                z-index: 10000;
+                display: flex;
+                flex-direction: column;
+            }
+            #ldc-progress.ldc-hidden { display: none; }
+            #ldc-progress header {
+                padding: 10px 12px;
+                background: #f3f3f3;
+                border-bottom: 1px solid #e0e0e0;
+                font-weight: 600;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            #ldc-progress header .ldc-progress-title { flex: 1; }
+            #ldc-progress header button {
+                padding: 4px 10px;
+                font-size: 12px;
+                cursor: pointer;
+                border: 1px solid #ccc;
+                background: white;
+                border-radius: 4px;
+            }
+            #ldc-progress .ldc-progress-summary {
+                padding: 8px 12px;
+                border-bottom: 1px solid #f0f0f0;
+            }
+            #ldc-progress .ldc-progress-bar {
+                height: 6px;
+                background: #e0e0e0;
+                border-radius: 3px;
+                overflow: hidden;
+                margin-top: 6px;
+            }
+            #ldc-progress .ldc-progress-bar > div {
+                height: 100%;
+                background: linear-gradient(90deg, #0078d4, #50e6ff);
+                width: 0%;
+                transition: width 0.2s;
+            }
+            #ldc-progress .ldc-progress-list {
+                flex: 1;
+                overflow-y: auto;
+                padding: 4px 12px 12px;
+            }
+            #ldc-progress .ldc-task {
+                padding: 4px 0;
+                border-bottom: 1px solid #f0f0f0;
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            #ldc-progress .ldc-task .ldc-task-name {
+                flex: 1;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            #ldc-progress .ldc-task .ldc-task-status {
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: 3px;
+            }
+            .ldc-status-pending { background: #f0f0f0; color: #666; }
+            .ldc-status-downloading { background: #cce4f7; color: #0078d4; }
+            .ldc-status-retrying { background: #fff4ce; color: #b78f00; }
+            .ldc-status-skipped { background: #e6e6e6; color: #555; }
+            .ldc-status-done { background: #dff6dd; color: #107c10; }
+            .ldc-status-failed { background: #fde7e9; color: #a4262c; }
+
+            .ldc-modal-backdrop {
+                position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+                z-index: 10001; display: flex; align-items: center; justify-content: center;
+                font-family: 'Segoe UI', Roboto, sans-serif;
+            }
+            .ldc-modal {
+                background: white; border-radius: 8px; padding: 20px 24px;
+                max-width: 480px; box-shadow: 0 16px 40px rgba(0,0,0,0.3);
+            }
+            .ldc-modal h2 { margin: 0 0 12px 0; font-size: 18px; }
+            .ldc-modal table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+            .ldc-modal td { padding: 4px 0; font-size: 13px; }
+            .ldc-modal td:first-child { color: #666; padding-right: 16px; }
+            .ldc-modal-buttons {
+                display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
+            }
+            .ldc-modal button {
+                padding: 8px 16px; border-radius: 4px; border: 1px solid #ccc;
+                background: white; cursor: pointer; font: inherit;
+            }
+            .ldc-modal button.ldc-primary {
+                background: #0078d4; color: white; border-color: #0078d4; font-weight: 600;
+            }
+
+            .ldc-toast {
+                position: fixed; top: 60px; right: 16px;
+                background: #323130; color: white;
+                padding: 10px 16px; border-radius: 4px;
+                z-index: 10002; max-width: 360px;
+                font-family: 'Segoe UI', Roboto, sans-serif; font-size: 13px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            }
+            .ldc-toast.ldc-toast-error { background: #a4262c; }
+            .ldc-toast.ldc-toast-warn { background: #b78f00; }
+        `;
+
+        function injectStyle() {
+            if (typeof GM_addStyle === 'function') GM_addStyle(STYLE);
+            else {
+                const s = document.createElement('style');
+                s.textContent = STYLE;
+                document.head.appendChild(s);
+            }
+        }
+
+        function el(tag, props = {}, children = []) {
+            const e = document.createElement(tag);
+            for (const [k, v] of Object.entries(props)) {
+                if (k === 'class') e.className = v;
+                else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+                else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
+                else if (k === 'text') e.textContent = v;
+                else if (k === 'html') e.innerHTML = v;
+                else if (v !== false && v !== null && v !== undefined) e.setAttribute(k, v);
+            }
+            for (const c of (Array.isArray(children) ? children : [children])) {
+                if (c == null) continue;
+                e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+            }
+            return e;
+        }
+
+        function fmtBytes(n) {
+            if (!n) return '0 B';
+            const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0; let v = n;
+            while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+            return `${v.toFixed(v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
+        }
+
+        function showToast(msg, kind = 'info', ms = 4000) {
+            const t = el('div', { class: `ldc-toast${kind === 'error' ? ' ldc-toast-error' : kind === 'warn' ? ' ldc-toast-warn' : ''}`, text: msg });
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), ms);
+        }
+
+        async function showPreflight({ courseCount, fileCount, totalBytes, destName }) {
+            return new Promise((resolve) => {
+                const onChoose = (ok) => { backdrop.remove(); resolve(ok); };
+                const backdrop = el('div', { class: 'ldc-modal-backdrop' }, [
+                    el('div', { class: 'ldc-modal' }, [
+                        el('h2', { text: 'Confirm batch download' }),
+                        el('p', { text: 'About to download:' }),
+                        el('table', {}, [
+                            el('tr', {}, [el('td', { text: 'Courses' }), el('td', { text: String(courseCount) })]),
+                            el('tr', {}, [el('td', { text: 'Files' }), el('td', { text: String(fileCount) })]),
+                            el('tr', {}, [el('td', { text: 'Total size' }), el('td', { text: fmtBytes(totalBytes) })]),
+                            el('tr', {}, [el('td', { text: 'Destination' }), el('td', { text: destName })]),
+                        ]),
+                        el('p', { text: 'Existing files of identical size will be skipped.', style: { color: '#666', fontSize: '12px' } }),
+                        el('div', { class: 'ldc-modal-buttons' }, [
+                            el('button', { onClick: () => onChoose(false), text: 'Cancel' }),
+                            el('button', { class: 'ldc-primary', onClick: () => onChoose(true), text: 'Start download' }),
+                        ]),
+                    ]),
+                ]);
+                document.body.appendChild(backdrop);
+            });
+        }
+
+        // Control bar
+        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, lblFolder, lblCount;
+
+        function buildBar() {
+            bar = el('div', { id: 'ldc-bar' });
+            btnFolder = el('button', { text: '📁 Choose folder', title: 'Pick destination root folder' });
+            lblFolder = el('span', { class: 'ldc-folder', text: '(no folder chosen)' });
+            btnSelectAll = el('button', { text: '☑ Select all visible' });
+            btnClear = el('button', { text: '✗ Clear selection' });
+            const spacer = el('span', { class: 'ldc-spacer' });
+            lblCount = el('span', { class: 'ldc-status', text: '0 selected' });
+            btnDownload = el('button', { class: 'ldc-primary', text: '⬇ Download selected', disabled: true });
+            btnCancel = el('button', { text: '⏹ Cancel', style: { display: 'none' } });
+            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, spacer, lblCount, btnDownload, btnCancel);
+            return bar;
+        }
+
+        function updateBar() {
+            const n = selection.size();
+            lblCount.textContent = `${n} selected`;
+            btnDownload.disabled = n === 0;
+        }
+
+        async function refreshFolderLabel() {
+            await fsaWriter.loadCachedRoot();
+            const h = fsaWriter.cachedRoot;
+            if (h) {
+                const perm = await fsaWriter.queryPermission(h);
+                lblFolder.textContent = `${h.name}${perm === 'granted' ? '' : ' (permission needed)'}`;
+            } else {
+                lblFolder.textContent = '(no folder chosen)';
+            }
+        }
+
+        // Row checkbox injection
+        let lookup = null;
+        function setLookup(l) { lookup = l; }
+
+        function injectRowCheckbox(toggleEl) {
+            if (!toggleEl || toggleEl.dataset.ldcEnhanced === '1') return;
+            const label = toggleEl.getAttribute('aria-label') || '';
+            const cls = treeIndex.classifyAriaRow(label, lookup);
+            if (cls.kind !== 'course') return;
+            toggleEl.dataset.ldcEnhanced = '1';
+            const id = selection.rowId(cls.name);
+            const cb = el('input', { type: 'checkbox', class: 'ldc-row-checkbox', 'data-ldc-row-id': id });
+            cb.checked = selection.has(id);
+            ['click', 'mousedown', 'keydown'].forEach((evt) => {
+                cb.addEventListener(evt, (e) => e.stopPropagation());
+            });
+            cb.addEventListener('change', () => {
+                if (cb.checked) selection.add(id); else selection.remove(id);
+            });
+            const wrap = el('span', { class: 'ldc-row-wrap' }, [cb]);
+            // Insert as previous sibling (outside the toggle's clickable area).
+            toggleEl.parentNode?.insertBefore(wrap, toggleEl);
+        }
+
+        function refreshAllCheckboxes() {
+            // Re-sync existing checkboxes to selection state (after Clear etc.)
+            document.querySelectorAll('input.ldc-row-checkbox').forEach((cb) => {
+                const id = cb.getAttribute('data-ldc-row-id');
+                cb.checked = selection.has(id);
+            });
+        }
+
+        function processAddedSubtree(node) {
+            if (!(node instanceof Element)) return;
+            if (node.matches?.('[role="button"][aria-label^="Toggle "]')) injectRowCheckbox(node);
+            node.querySelectorAll?.('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
+        }
+
+        function observeRows() {
+            // Initial pass
+            document.querySelectorAll('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
+
+            let pending = false;
+            const queue = [];
+            const observer = new MutationObserver((mutations) => {
+                for (const m of mutations) {
+                    for (const n of m.addedNodes) queue.push(n);
+                }
+                if (!pending) {
+                    pending = true;
+                    requestAnimationFrame(() => {
+                        pending = false;
+                        const batch = queue.splice(0);
+                        for (const n of batch) processAddedSubtree(n);
+                    });
+                }
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+            return observer;
+        }
+
+        // Progress panel
+        let panel, panelHeader, panelSummary, panelBar, panelList;
+        function buildPanel() {
+            panel = el('div', { id: 'ldc-progress', class: 'ldc-hidden' });
+            panelHeader = el('header', {}, [
+                el('span', { class: 'ldc-progress-title', text: 'Download progress' }),
+                el('button', { text: 'Copy errors', onClick: copyErrors }),
+                el('button', { text: '✕', onClick: () => panel.classList.add('ldc-hidden') }),
+            ]);
+            panelSummary = el('div', { class: 'ldc-progress-summary' });
+            panelBar = el('div', { class: 'ldc-progress-bar' }, [el('div')]);
+            panelList = el('div', { class: 'ldc-progress-list' });
+            panel.append(panelHeader, panelSummary, panelBar, panelList);
+            return panel;
+        }
+
+        function copyErrors() {
+            const s = orchestrator.state;
+            if (!s) return;
+            const failed = s.tasks.filter((t) => t.status === 'failed');
+            if (failed.length === 0) { showToast('No failed items to copy', 'info'); return; }
+            const text = failed.map((t) => `${t.parentDir}/${t.subDir}/${t.fileName}\t${t.error}`).join('\n');
+            navigator.clipboard.writeText(text).then(() => showToast(`Copied ${failed.length} error rows`));
+        }
+
+        function showPanel() { panel.classList.remove('ldc-hidden'); }
+
+        function renderPanel() {
+            const s = orchestrator.state;
+            if (!s) return;
+            const pct = s.bytesTotal ? Math.min(100, (s.bytesDone / s.bytesTotal) * 100) : 0;
+            panelBar.firstChild.style.width = `${pct.toFixed(1)}%`;
+            panelSummary.textContent = `${s.done}/${s.total} files · ${fmtBytes(s.bytesDone)} / ${fmtBytes(s.bytesTotal)}` +
+                (s.failed ? ` · ${s.failed} failed` : '') +
+                (s.skipped ? ` · ${s.skipped} skipped` : '') +
+                (s.paused ? ` · paused` : '');
+            // Render tasks (limit to first 200 for perf)
+            const list = s.tasks.slice(0, 200);
+            panelList.innerHTML = '';
+            for (const t of list) {
+                const row = el('div', { class: 'ldc-task' }, [
+                    el('span', { class: 'ldc-task-name', text: t.fileName, title: `${t.parentDir}/${t.subDir}/${t.fileName}` }),
+                    el('span', { class: `ldc-task-status ldc-status-${t.status}`, text: t.status }),
+                ]);
+                panelList.appendChild(row);
+            }
+            if (s.tasks.length > 200) {
+                panelList.appendChild(el('div', { class: 'ldc-task', text: `... and ${s.tasks.length - 200} more` }));
+            }
+        }
+
+        return {
+            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, refreshAllCheckboxes,
+            buildPanel, showPanel, renderPanel, showPreflight, showToast,
+            get bar() { return bar; },
+            get btnFolder() { return btnFolder; },
+            get btnSelectAll() { return btnSelectAll; },
+            get btnClear() { return btnClear; },
+            get btnDownload() { return btnDownload; },
+            get btnCancel() { return btnCancel; },
+            get lblFolder() { return lblFolder; },
+        };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 12. Wiring / boot
+    // ─────────────────────────────────────────────────────────────────────────
+
+    let lookup = null;
+    let lookupReady;
+    const lookupReadyPromise = new Promise((r) => { lookupReady = r; });
+
+    async function loadLookup() {
+        const tree = await api.getSearchTree();
+        lookup = treeIndex.buildLookup(tree);
+        ui.setLookup(lookup);
+        lookupReady(lookup);
+        return lookup;
+    }
+
+    async function onChooseFolder() {
+        try {
+            await fsaWriter.pickRoot();
+            await ui.refreshFolderLabel();
+            ui.showToast('Folder selected.');
+        } catch (e) {
+            if (e && e.name === 'AbortError') return; // user cancelled picker
+            ui.showToast(`Could not pick folder: ${e && e.message}`, 'error');
+        }
+    }
+
+    function onSelectAllVisible() {
+        const cbs = document.querySelectorAll('input.ldc-row-checkbox');
+        cbs.forEach((cb) => {
+            // Only consider checkboxes whose row is currently visible (offsetParent != null)
+            if (cb.offsetParent !== null) {
+                const id = cb.getAttribute('data-ldc-row-id');
+                selection.add(id);
+                cb.checked = true;
+            }
+        });
+    }
+
+    function onClearSelection() {
+        selection.clear();
+        ui.refreshAllCheckboxes();
+    }
+
+    async function onDownload() {
+        if (orchestrator.isRunning) return;
+        const ids = selection.ids();
+        if (ids.length === 0) return;
+        await lookupReadyPromise;
+
+        // Ensure folder
+        await fsaWriter.loadCachedRoot();
+        let root = fsaWriter.cachedRoot;
+        if (!root) {
+            ui.showToast('Please choose a destination folder first.', 'warn');
+            try { root = await fsaWriter.pickRoot(); } catch (e) {
+                ui.showToast(`Could not pick folder: ${e && e.message}`, 'error'); return;
+            }
+            await ui.refreshFolderLabel();
+        }
+        try { await fsaWriter.ensurePermission(root); }
+        catch (e) {
+            ui.showToast(`${e && e.message} Click "Choose folder" to re-grant.`, 'error');
+            await fsaWriter.clearCachedRoot();
+            await ui.refreshFolderLabel();
+            return;
+        }
+
+        const tasks = orchestrator.buildPlan(ids, lookup);
+        if (tasks.length === 0) { ui.showToast('No files to download.', 'warn'); return; }
+        const totalBytes = tasks.reduce((a, t) => a + (t.size || 0), 0);
+        const ok = await ui.showPreflight({
+            courseCount: ids.length,
+            fileCount: tasks.length,
+            totalBytes,
+            destName: root.name,
+        });
+        if (!ok) return;
+
+        ui.showPanel();
+        ui.btnDownload.disabled = true;
+        ui.btnCancel.style.display = '';
+        try {
+            await orchestrator.runQueue(tasks, root);
+            const s = orchestrator.state;
+            if (s.paused) {
+                ui.showToast(`Download paused: ${s.pauseReason}`, 'error', 8000);
+            } else if (s.failed > 0) {
+                ui.showToast(`Done with ${s.failed} failed. See panel.`, 'warn');
+            } else {
+                ui.showToast(`✓ All ${s.done} files complete.`);
+            }
+        } catch (e) {
+            ui.showToast(`Download error: ${e && e.message}`, 'error');
+        } finally {
+            ui.btnDownload.disabled = selection.size() === 0;
+            ui.btnCancel.style.display = 'none';
+        }
+    }
+
+    function onCancel() { orchestrator.cancel(); }
+
+    function setupBar() {
+        const bar = ui.buildBar();
+        ui.btnFolder.addEventListener('click', onChooseFolder);
+        ui.btnSelectAll.addEventListener('click', onSelectAllVisible);
+        ui.btnClear.addEventListener('click', onClearSelection);
+        ui.btnDownload.addEventListener('click', onDownload);
+        ui.btnCancel.addEventListener('click', onCancel);
+        selection.onChange(() => ui.updateBar());
+        ui.updateBar();
+        // Insert at the very top of <body>
+        document.body.insertBefore(bar, document.body.firstChild);
+    }
+
+    function setupPanel() {
+        const panel = ui.buildPanel();
+        document.body.appendChild(panel);
+        orchestrator.on(() => ui.renderPanel());
+    }
+
+    function registerMenuCommands() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+        GM_registerMenuCommand('LDC: Reset chosen folder', async () => {
+            await fsaWriter.clearCachedRoot();
+            await ui.refreshFolderLabel();
+            ui.showToast('Cached folder cleared.');
+        });
+        GM_registerMenuCommand('LDC: Set concurrency (1-4)', () => {
+            const cur = orchestrator.getConcurrency();
+            const v = prompt(`Concurrent downloads (1–${MAX_CONCURRENCY}):`, String(cur));
+            if (v === null) return;
+            orchestrator.setConcurrency(v);
+            ui.showToast(`Concurrency = ${orchestrator.getConcurrency()}`);
+        });
+        GM_registerMenuCommand('LDC: Token status', () => {
+            const t = tokenInterceptor.currentToken;
+            if (!t) { ui.showToast('No token captured yet.', 'warn'); return; }
+            const exp = tokenInterceptor.decodeJwtExp(t);
+            if (exp === null) ui.showToast('Token captured (opaque, JWE).');
+            else {
+                const left = exp - Math.floor(Date.now() / 1000);
+                ui.showToast(`Token expires in ${left}s (${new Date(exp * 1000).toLocaleTimeString()}).`);
+            }
+        });
+    }
+
+    async function boot() {
+        ui.injectStyle();
+        setupBar();
+        setupPanel();
+        registerMenuCommands();
+        await ui.refreshFolderLabel();
+
+        // Wait for SPA to render the results container, then load lookup and start observing.
+        try {
+            await loadLookup();
+        } catch (e) {
+            if (e instanceof TokenExpiredError) {
+                ui.showToast('Waiting for sign-in to finish... Try again in a moment.', 'warn', 8000);
+            } else {
+                ui.showToast(`Failed to load course list: ${e && e.message}`, 'error', 8000);
+            }
+        }
+        ui.observeRows();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Expose for debugging (read-only handle on `window.__ldc`)
+    // ─────────────────────────────────────────────────────────────────────────
+    try {
+        unsafeWindow.__ldc = Object.freeze({
+            tokenInterceptor, courseParser, pathSanitizer, treeIndex,
+            selection, orchestrator, fsaWriter, api,
+            getLookup: () => lookup,
+        });
+    } catch (_) {}
+})();
