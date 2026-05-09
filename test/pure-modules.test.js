@@ -8,17 +8,21 @@ const courseParser = (() => {
     function parseRowName(name) {
         if (!name || typeof name !== 'string') return { code: '', title: '', languageHint: null };
         const idx = name.indexOf(':');
-        let code, rest;
-        if (idx === -1) { code = ''; rest = name.trim(); }
-        else { code = name.slice(0, idx).trim(); rest = name.slice(idx + 1).trim(); }
+        let rawCode, rest;
+        if (idx === -1) { rawCode = ''; rest = name.trim(); }
+        else { rawCode = name.slice(0, idx).trim(); rest = name.slice(idx + 1).trim(); }
         const { title, languageHint } = stripLanguageSuffix(rest);
-        return { code, title, languageHint };
+        return { code: simplifyCourseCode(rawCode), title, languageHint };
     }
     function stripLanguageSuffix(title) {
         if (!title) return { title: '', languageHint: null };
         const m = title.match(/^(.*)\s*\(([^()]+)\)\s*$/);
         if (m) return { title: m[1].trim(), languageHint: m[2].trim() };
         return { title: title.trim(), languageHint: null };
+    }
+    function simplifyCourseCode(code) {
+        if (!code || typeof code !== 'string') return code;
+        return code.replace(/T00[A-Z]?$/, '').replace(/-$/, '');
     }
     function resolveLanguage(file) {
         const raw = file && file.language;
@@ -35,7 +39,7 @@ const courseParser = (() => {
         if (code) return title ? `${code} ${title}` : code;
         return courseSeg.replace(/:\s*/g, ' ');
     }
-    return { parseRowName, stripLanguageSuffix, resolveLanguage, canonicalCourseDirName };
+    return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName };
 })();
 
 const MAX_FILENAME_LEN = 150;
@@ -82,26 +86,29 @@ function eq(actual, expected, label) {
 
 // Course parser tests
 eq(courseParser.parseRowName('AZ-040T00: Automate Administration with PowerShell'),
-    { code: 'AZ-040T00', title: 'Automate Administration with PowerShell', languageHint: null },
-    'AZ-040T00 plain');
+    { code: 'AZ-040', title: 'Automate Administration with PowerShell', languageHint: null },
+    'AZ-040T00 plain → AZ-040 (T00 stripped)');
 eq(courseParser.parseRowName('AZ-040T00: Automate Administration with PowerShell (Japanese)'),
-    { code: 'AZ-040T00', title: 'Automate Administration with PowerShell', languageHint: 'Japanese' },
-    'AZ-040T00 with Japanese');
+    { code: 'AZ-040', title: 'Automate Administration with PowerShell', languageHint: 'Japanese' },
+    'AZ-040T00 with Japanese → AZ-040');
 eq(courseParser.parseRowName('MS-700T00: Managing Microsoft Teams'),
-    { code: 'MS-700T00', title: 'Managing Microsoft Teams', languageHint: null },
-    'MS-700T00 keeps T00');
+    { code: 'MS-700', title: 'Managing Microsoft Teams', languageHint: null },
+    'MS-700T00 → MS-700 (T00 stripped)');
 eq(courseParser.parseRowName('PL-300T00A: Microsoft Power BI Data Analyst'),
-    { code: 'PL-300T00A', title: 'Microsoft Power BI Data Analyst', languageHint: null },
-    'PL-300T00A keeps full code');
+    { code: 'PL-300', title: 'Microsoft Power BI Data Analyst', languageHint: null },
+    'PL-300T00A → PL-300 (T00A stripped)');
 eq(courseParser.parseRowName('100-100: Example'),
     { code: '100-100', title: 'Example', languageHint: null },
-    'numeric-prefix code');
+    'numeric-prefix code (no T suffix)');
 eq(courseParser.parseRowName('AI-3017: Microsoft AI for business leaders'),
     { code: 'AI-3017', title: 'Microsoft AI for business leaders', languageHint: null },
-    'AI-3017');
+    'AI-3017 unchanged (no T suffix)');
 eq(courseParser.parseRowName('AZ-1002: Configure secure access (Chinese Simplified)'),
     { code: 'AZ-1002', title: 'Configure secure access', languageHint: 'Chinese Simplified' },
-    'multi-word language');
+    'AZ-1002 unchanged + multi-word language');
+eq(courseParser.parseRowName('AZ-040T00B: Title'),
+    { code: 'AZ-040', title: 'Title', languageHint: null },
+    'T00B (any single trailing letter) stripped');
 
 // Language resolver tests
 eq(courseParser.resolveLanguage({ language: 'Japanese (ja-jp)' }), 'Japanese', 'lang ja-jp');
@@ -113,12 +120,12 @@ eq(courseParser.resolveLanguage({}), 'Unknown', 'lang missing');
 // Canonical course dir name
 eq(courseParser.canonicalCourseDirName(
     'Azure/AZ-040T00: Automate Administration with PowerShell/AZ-040T00A-ENU-Powerpoint.zip'),
-    'AZ-040T00 Automate Administration with PowerShell',
-    'canonical from blob path');
+    'AZ-040 Automate Administration with PowerShell',
+    'canonical from blob path (T00 stripped)');
 eq(courseParser.canonicalCourseDirName(
     'Azure/AZ-040T00: Automate Administration with PowerShell (Japanese)/AZ-040T00-PowerPoint.ja-JP.zip'),
-    'AZ-040T00 Automate Administration with PowerShell',
-    'canonical drops language suffix');
+    'AZ-040 Automate Administration with PowerShell',
+    'canonical drops language suffix and T00');
 
 // Sanitizer tests
 eq(pathSanitizer.sanitizeSegment('AZ-040T00 Automate Administration with PowerShell'),
@@ -146,8 +153,8 @@ eq(courseParser.canonicalCourseDirName(''), '', 'empty blobUrl');
 eq(courseParser.canonicalCourseDirName(null), '', 'null blobUrl');
 eq(courseParser.canonicalCourseDirName('NoSlash.zip'), 'NoSlash.zip', 'single seg no slash');
 eq(courseParser.canonicalCourseDirName('AZ-040T00: Title/file.pdf'),
-    'AZ-040T00 Title',
-    'two-segment path');
+    'AZ-040 Title',
+    'two-segment path (T00 stripped)');
 
 // Unicode preservation
 eq(pathSanitizer.sanitizeSegment('中文檔名.txt'), '中文檔名.txt', 'CJK preserved');
@@ -167,6 +174,22 @@ eq(courseParser.resolveLanguage({ language: null }), 'Unknown', 'null lang');
 eq(courseParser.parseRowName('XX-1: Title with: colon (English)'),
     { code: 'XX-1', title: 'Title with: colon', languageHint: 'English' },
     'multi-colon title preserves inner colons');
+
+// simplifyCourseCode direct cases (added in 0.3.0)
+eq(courseParser.simplifyCourseCode('AZ-040T00'), 'AZ-040', 'plain T00');
+eq(courseParser.simplifyCourseCode('AZ-040T00A'), 'AZ-040', 'T00A');
+eq(courseParser.simplifyCourseCode('AZ-040T00B'), 'AZ-040', 'T00B (any single trailing letter)');
+eq(courseParser.simplifyCourseCode('MS-700T00'), 'MS-700', 'MS-700T00');
+eq(courseParser.simplifyCourseCode('PL-300T00A'), 'PL-300', 'PL-300T00A');
+eq(courseParser.simplifyCourseCode('AZ-040T01'), 'AZ-040T01', 'T01 NOT stripped (only T00 family per spec)');
+eq(courseParser.simplifyCourseCode('AZ-1002'), 'AZ-1002', 'no T suffix unchanged');
+eq(courseParser.simplifyCourseCode('AI-3017'), 'AI-3017', 'AI-3017 unchanged');
+eq(courseParser.simplifyCourseCode(''), '', 'empty passthrough');
+eq(courseParser.simplifyCourseCode(null), null, 'null passthrough');
+eq(courseParser.simplifyCourseCode(undefined), undefined, 'undefined passthrough');
+eq(courseParser.simplifyCourseCode(42), 42, 'non-string passthrough');
+eq(courseParser.simplifyCourseCode('XX-T00'), 'XX', 'trailing dash trimmed when only T00 follows');
+eq(courseParser.simplifyCourseCode('T00'), '', 'bare T00 strips entirely');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
