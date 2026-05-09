@@ -135,5 +135,38 @@ const longExt = pathSanitizer.sanitizeSegment('a'.repeat(200) + '.zip');
 eq(longExt.endsWith('.zip'), true, 'long name preserves extension');
 eq(longExt.length <= MAX_FILENAME_LEN, true, 'long name+ext within limit');
 
+// Edge inputs (added in 0.2.0 for hardening)
+eq(pathSanitizer.sanitizeSegment(undefined), '_', 'undefined');
+eq(courseParser.parseRowName(null), { code: '', title: '', languageHint: null }, 'null input to parseRowName');
+eq(courseParser.parseRowName(undefined), { code: '', title: '', languageHint: null }, 'undefined input to parseRowName');
+eq(courseParser.parseRowName(42), { code: '', title: '', languageHint: null }, 'non-string input to parseRowName');
+
+// canonicalCourseDirName edge cases
+eq(courseParser.canonicalCourseDirName(''), '', 'empty blobUrl');
+eq(courseParser.canonicalCourseDirName(null), '', 'null blobUrl');
+eq(courseParser.canonicalCourseDirName('NoSlash.zip'), 'NoSlash.zip', 'single seg no slash');
+eq(courseParser.canonicalCourseDirName('AZ-040T00: Title/file.pdf'),
+    'AZ-040T00 Title',
+    'two-segment path');
+
+// Unicode preservation
+eq(pathSanitizer.sanitizeSegment('中文檔名.txt'), '中文檔名.txt', 'CJK preserved');
+eq(pathSanitizer.sanitizeSegment('café.pdf'), 'café.pdf', 'accented Latin preserved');
+
+// Path-traversal baseline. The trailing-dot strip + empty-fallback in sanitizeSegment
+// happens to neutralise `..` to `_`, which is a safer default than letting it through.
+eq(pathSanitizer.sanitizeSegment('..'), '_', '`..` is neutralised to `_` (trailing-dot strip then empty-fallback)');
+eq(pathSanitizer.sanitizeSegment('../etc/passwd'), '..-etc-passwd', '`/` replaced, embedded `..` preserved (only trailing dots are stripped)');
+
+// Additional language formats
+eq(courseParser.resolveLanguage({ language: 'Russian (ru-ru)' }), 'Russian', 'lang ru-ru');
+eq(courseParser.resolveLanguage({ language: '' }), 'Unknown', 'empty lang string');
+eq(courseParser.resolveLanguage({ language: null }), 'Unknown', 'null lang');
+
+// Multi-colon title (split-on-first-colon must not over-split)
+eq(courseParser.parseRowName('XX-1: Title with: colon (English)'),
+    { code: 'XX-1', title: 'Title with: colon', languageHint: 'English' },
+    'multi-colon title preserves inner colons');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.1.1
+// @version      0.2.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -84,6 +84,8 @@
         }
 
         function install() {
+            if (install.__ldcInstalled) return;
+            install.__ldcInstalled = true;
             const w = unsafeWindow;
             // Hook fetch
             const origFetch = w.fetch;
@@ -98,20 +100,26 @@
                             if (auth && auth.startsWith('Bearer ')) setToken(auth.slice('Bearer '.length));
                         }
                     } catch (_) {}
-                    return origFetch.apply(this, arguments);
+                    // Bind explicitly to unsafeWindow rather than dynamic `this` so the
+                    // wrapper works the same when called as a free function or as a method.
+                    return origFetch.call(w, input, init);
                 };
                 wrapped.__ldcWrapped = true;
                 w.fetch = wrapped;
             }
-            // Hook XHR.setRequestHeader (defensive — site uses fetch but be safe)
+            // Hook XHR.open + setRequestHeader (defensive — site uses fetch but be safe)
             const XHRProto = w.XMLHttpRequest && w.XMLHttpRequest.prototype;
             if (XHRProto && !XHRProto.setRequestHeader.__ldcWrapped) {
                 const origOpen = XHRProto.open;
                 const origSet = XHRProto.setRequestHeader;
-                XHRProto.open = function (method, url) {
-                    this.__ldcUrl = url;
-                    return origOpen.apply(this, arguments);
-                };
+                if (!origOpen.__ldcWrapped) {
+                    const wrappedOpen = function (method, url) {
+                        this.__ldcUrl = url;
+                        return origOpen.apply(this, arguments);
+                    };
+                    wrappedOpen.__ldcWrapped = true;
+                    XHRProto.open = wrappedOpen;
+                }
                 const wrappedSet = function (name, value) {
                     try {
                         if (String(name).toLowerCase() === 'authorization' &&
@@ -149,18 +157,24 @@
             const tokenAtStart = currentToken;
             return new Promise((resolve, reject) => {
                 const t0 = Date.now();
+                let done = false;
+                let timer;
+                const cleanup = () => {
+                    if (done) return;
+                    done = true;
+                    tokenChangedListeners = tokenChangedListeners.filter((f) => f !== onChange);
+                    clearInterval(timer);
+                };
                 const onChange = (newToken) => {
-                    if (newToken && newToken !== tokenAtStart) {
-                        tokenChangedListeners = tokenChangedListeners.filter((f) => f !== onChange);
-                        clearInterval(timer);
-                        resolve(newToken);
-                    }
+                    if (done || !newToken || newToken === tokenAtStart) return;
+                    cleanup();
+                    resolve(newToken);
                 };
                 tokenChangedListeners.push(onChange);
-                const timer = setInterval(() => {
+                timer = setInterval(() => {
+                    if (done) return;
                     if (Date.now() - t0 > timeoutMs) {
-                        tokenChangedListeners = tokenChangedListeners.filter((f) => f !== onChange);
-                        clearInterval(timer);
+                        cleanup();
                         reject(new TokenExpiredError('Auth token near expiry and no refresh seen. Please reload the page.'));
                     }
                 }, 500);
@@ -406,33 +420,34 @@
                 req.onerror = () => reject(req.error);
             });
         }
-        async function get(key) {
-            const db = await open();
+        function promisifyRequest(req) {
             return new Promise((resolve, reject) => {
-                const tx = db.transaction(IDB_STORE, 'readonly');
-                const req = tx.objectStore(IDB_STORE).get(key);
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
             });
         }
-        async function set(key, value) {
+        // Run an op against the object store inside a transaction, then close
+        // the underlying connection. Without this `close()` we leak an IndexedDB
+        // connection on every invocation.
+        async function withDb(mode, op) {
             const db = await open();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction(IDB_STORE, 'readwrite');
-                tx.objectStore(IDB_STORE).put(value, key);
-                tx.oncomplete = () => resolve();
-                tx.onerror = () => reject(tx.error);
-            });
+            try {
+                const tx = db.transaction(IDB_STORE, mode);
+                const store = tx.objectStore(IDB_STORE);
+                const result = await op(store);
+                await new Promise((resolve, reject) => {
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                    tx.onabort = () => reject(tx.error || new Error('IDB transaction aborted'));
+                });
+                return result;
+            } finally {
+                try { db.close(); } catch (_) {}
+            }
         }
-        async function del(key) {
-            const db = await open();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction(IDB_STORE, 'readwrite');
-                tx.objectStore(IDB_STORE).delete(key);
-                tx.oncomplete = () => resolve();
-                tx.onerror = () => reject(tx.error);
-            });
-        }
+        async function get(key)        { return withDb('readonly',  (s) => promisifyRequest(s.get(key))); }
+        async function set(key, value) { return withDb('readwrite', (s) => promisifyRequest(s.put(value, key))); }
+        async function del(key)        { return withDb('readwrite', (s) => promisifyRequest(s.delete(key))); }
         return { get, set, del };
     })();
 
@@ -521,15 +536,25 @@
                 if (response.body && typeof response.body.getReader === 'function' && onProgress) {
                     const reader = response.body.getReader();
                     let received = 0;
-                    while (true) {
-                        if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        await writable.write(value);
-                        received += value.byteLength;
-                        try { onProgress(received); } catch (_) {}
+                    try {
+                        while (true) {
+                            if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            await writable.write(value);
+                            received += value.byteLength;
+                            try { onProgress(received); } catch (_) {}
+                        }
+                    } finally {
+                        // Releasing the reader is essential when the loop exits via abort
+                        // — otherwise the body remains locked and the connection cannot
+                        // be reused or garbage-collected.
+                        try { reader.releaseLock(); } catch (_) {}
                     }
                 } else if (response.body && response.body.pipeTo) {
+                    // pipeTo automatically calls writable.close() when the source closes,
+                    // and writable.abort() if the source errors, so we can return without
+                    // an explicit close here.
                     await response.body.pipeTo(writable, { signal });
                     return;
                 } else {
@@ -592,7 +617,10 @@
             const tasks = [];
             for (const rowName of selectedRowNames) {
                 const node = lookup.get(rowName);
-                if (!node) continue;
+                if (!node) {
+                    try { console.warn('[LDC] selected row not found in API tree:', rowName); } catch (_) {}
+                    continue;
+                }
                 const language = node.languageHint || courseParser.resolveLanguage(node.files[0] || {});
                 const subDirName = node.courseCode ? `${node.courseCode}-${language}` : language;
                 for (const f of node.files) {
@@ -771,15 +799,6 @@
             }
         }
 
-        async function retryFailed(rootHandle) {
-            if (!state) return;
-            const failed = state.tasks.filter((t) => t.status === 'failed');
-            if (failed.length === 0) return;
-            for (const t of failed) { t.status = 'pending'; t.attempts = 0; t.error = null; }
-            state.failed -= failed.length;
-            await runQueue(failed, rootHandle); // creates new state — caller should wire UI accordingly
-        }
-
         function cancel() { if (abortController) abortController.abort(); }
         function setConcurrency(n) {
             const v = Math.max(1, Math.min(MAX_CONCURRENCY, parseInt(n, 10) || DEFAULT_CONCURRENCY));
@@ -788,7 +807,7 @@
         function getConcurrency() { return concurrencyOverride || DEFAULT_CONCURRENCY; }
 
         return {
-            buildPlan, runQueue, retryFailed, cancel, setConcurrency, getConcurrency,
+            buildPlan, runQueue, cancel, setConcurrency, getConcurrency,
             on: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
             get state() { return state; },
             get isRunning() { return running; },
@@ -973,6 +992,9 @@
             }
         }
 
+        // Tiny element builder. Intentionally supports only `text` (textContent) — never
+        // `html` / `innerHTML` — to avoid XSS footguns when future contributors plumb
+        // user-provided strings (file names, error messages) through this helper.
         function el(tag, props = {}, children = []) {
             const e = document.createElement(tag);
             for (const [k, v] of Object.entries(props)) {
@@ -980,7 +1002,6 @@
                 else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
                 else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
                 else if (k === 'text') e.textContent = v;
-                else if (k === 'html') e.innerHTML = v;
                 else if (v !== false && v !== null && v !== undefined) e.setAttribute(k, v);
             }
             for (const c of (Array.isArray(children) ? children : [children])) {
@@ -1114,13 +1135,15 @@
             node.querySelectorAll?.('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
         }
 
+        let rowObserver = null;
         function observeRows() {
+            if (rowObserver) return rowObserver; // idempotent
             // Initial pass
             document.querySelectorAll('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
 
             let pending = false;
             const queue = [];
-            const observer = new MutationObserver((mutations) => {
+            rowObserver = new MutationObserver((mutations) => {
                 for (const m of mutations) {
                     for (const n of m.addedNodes) queue.push(n);
                 }
@@ -1133,8 +1156,15 @@
                     });
                 }
             });
-            observer.observe(document.body, { childList: true, subtree: true });
-            return observer;
+            rowObserver.observe(document.body, { childList: true, subtree: true });
+            return rowObserver;
+        }
+
+        function disposeRows() {
+            if (rowObserver) {
+                try { rowObserver.disconnect(); } catch (_) {}
+                rowObserver = null;
+            }
         }
 
         // Progress panel
@@ -1196,7 +1226,7 @@
         }
 
         return {
-            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, refreshAllCheckboxes,
+            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes,
             buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
             get bar() { return bar; },
             get btnFolder() { return btnFolder; },
@@ -1318,6 +1348,8 @@
         ui.btnClear.addEventListener('click', onClearSelection);
         ui.btnDownload.addEventListener('click', onDownload);
         ui.btnCancel.addEventListener('click', onCancel);
+        // page-lifetime listener — selection lives until page unload, so the unsubscribe
+        // returned by onChange is intentionally discarded.
         selection.onChange(() => ui.updateBar());
         ui.updateBar();
         // Insert at the very top of <body>
