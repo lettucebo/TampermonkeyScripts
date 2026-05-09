@@ -1151,7 +1151,7 @@
             lblFolder = el('span', { class: 'ldc-folder', text: '(no folder chosen)' });
             btnSelectAll = el('button', { text: '☑ Select all visible' });
             btnClear = el('button', { text: '✗ Clear selection' });
-            selSort = el('select', { class: 'ldc-sort', title: 'Sort courses within each category by last-updated date' }, [
+            selSort = el('select', { class: 'ldc-sort', 'aria-label': 'Sort courses within each category by last-updated date', title: 'Sort courses within each category by last-updated date' }, [
                 el('option', { value: 'none', text: '⇅ Sort: Default' }),
                 el('option', { value: 'date-desc', text: '⇅ Sort: Updated ↓ (newest first)' }),
                 el('option', { value: 'date-asc', text: '⇅ Sort: Updated ↑ (oldest first)' }),
