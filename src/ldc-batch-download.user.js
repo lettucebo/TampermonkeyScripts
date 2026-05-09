@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.3.0
+// @version      0.4.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -329,7 +329,63 @@
             return courseSeg.replace(/:\s*/g, ' ');
         }
 
-        return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName };
+        // Parse a date value coming from the LDC API into epoch milliseconds.
+        // Accepts: ISO-ish strings, numeric epoch (sec or ms), Date instances.
+        // Returns 0 for missing / unparseable inputs (caller treats 0 as "no date").
+        function parseDate(value) {
+            if (value === null || value === undefined || value === '') return 0;
+            if (value instanceof Date) {
+                const t = value.getTime();
+                return Number.isFinite(t) ? t : 0;
+            }
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                // Heuristic: < 10^12 → seconds (epoch_s), else ms. 10^12 ms is year 2001,
+                // 10^12 s is year 33658, so the boundary safely separates the two.
+                return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+            }
+            if (typeof value === 'string') {
+                const s = value.trim();
+                if (!s) return 0;
+                // Pure-digit string → treat as numeric epoch.
+                if (/^-?\d+(\.\d+)?$/.test(s)) {
+                    const n = Number(s);
+                    if (!Number.isFinite(n)) return 0;
+                    return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+                }
+                const t = Date.parse(s);
+                return Number.isFinite(t) ? t : 0;
+            }
+            return 0;
+        }
+
+        // Pick the "best" date field from a file object. The LDC API field name has
+        // varied (lastModified / modifiedDate / lastUpdated / updateDate / publishDate),
+        // so we probe a list of candidates and return the first one that parses.
+        const FILE_DATE_FIELDS = ['lastModified', 'modifiedDate', 'lastUpdated', 'updatedAt', 'updateDate', 'modifiedOn', 'publishDate', 'publishedDate', 'createdDate'];
+        function pickFileDate(file) {
+            if (!file) return 0;
+            for (const k of FILE_DATE_FIELDS) {
+                if (k in file) {
+                    const t = parseDate(file[k]);
+                    if (t > 0) return t;
+                }
+            }
+            return 0;
+        }
+
+        // Aggregate a course row's "last updated" timestamp from its files.
+        // Returns the max parsed epoch_ms across files, or 0 if none parse.
+        function courseLastModified(files) {
+            if (!Array.isArray(files) || files.length === 0) return 0;
+            let max = 0;
+            for (const f of files) {
+                const t = pickFileDate(f);
+                if (t > max) max = t;
+            }
+            return max;
+        }
+
+        return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName, parseDate, pickFileDate, courseLastModified };
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -383,10 +439,11 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     const treeIndex = (() => {
-        // Returns Map<rowName, { rowName, files, courseCode, courseTitle, languageHint, parentDirName }>
+        // Returns Map<rowName, { rowName, files, courseCode, courseTitle, languageHint, parentDirName, lastModified }>
         function buildLookup(searchTree) {
             const map = new Map();
             if (!Array.isArray(searchTree)) return map;
+            let withDate = 0;
             for (const cat of searchTree) {
                 const catDirs = (cat && cat.directories) || [];
                 for (const node of catDirs) {
@@ -400,6 +457,8 @@
                         const fromBlob = courseParser.canonicalCourseDirName(files[0].url);
                         if (fromBlob) parentDirName = fromBlob;
                     }
+                    const lastModified = courseParser.courseLastModified(files);
+                    if (lastModified > 0) withDate++;
                     map.set(node.name, {
                         rowName: node.name,
                         files,
@@ -407,8 +466,12 @@
                         courseTitle: title,
                         languageHint,
                         parentDirName,
+                        lastModified,
                     });
                 }
+            }
+            if (map.size > 0 && withDate === 0) {
+                try { console.warn('[LDC] No date metadata found on any course file; sort-by-updated will be disabled.'); } catch (_) {}
             }
             return map;
         }
@@ -866,6 +929,16 @@
             }
             #ldc-bar button:hover:not(:disabled) { background: #f0f6fc; }
             #ldc-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+            #ldc-bar select.ldc-sort {
+                padding: 6px 8px;
+                border-radius: 4px;
+                border: none;
+                font: inherit;
+                color: #0078d4;
+                background: white;
+                cursor: pointer;
+            }
+            #ldc-bar select.ldc-sort:disabled { opacity: 0.5; cursor: not-allowed; }
             #ldc-bar .ldc-spacer { flex: 1; }
             #ldc-bar .ldc-status { font-size: 12px; opacity: 0.9; }
             #ldc-bar .ldc-folder { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.95; }
@@ -1070,7 +1143,7 @@
         }
 
         // Control bar
-        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, lblFolder, lblCount;
+        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, lblFolder, lblCount, selSort;
 
         function buildBar() {
             bar = el('div', { id: 'ldc-bar' });
@@ -1078,11 +1151,16 @@
             lblFolder = el('span', { class: 'ldc-folder', text: '(no folder chosen)' });
             btnSelectAll = el('button', { text: '☑ Select all visible' });
             btnClear = el('button', { text: '✗ Clear selection' });
+            selSort = el('select', { class: 'ldc-sort', title: 'Sort courses within each category by last-updated date' }, [
+                el('option', { value: 'none', text: '⇅ Sort: Default' }),
+                el('option', { value: 'date-desc', text: '⇅ Sort: Updated ↓ (newest first)' }),
+                el('option', { value: 'date-asc', text: '⇅ Sort: Updated ↑ (oldest first)' }),
+            ]);
             const spacer = el('span', { class: 'ldc-spacer' });
             lblCount = el('span', { class: 'ldc-status', text: '0 selected' });
             btnDownload = el('button', { class: 'ldc-primary', text: '⬇ Download selected', disabled: true });
             btnCancel = el('button', { text: '⏹ Cancel', style: { display: 'none' } });
-            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, spacer, lblCount, btnDownload, btnCancel);
+            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel);
             return bar;
         }
 
@@ -1155,15 +1233,124 @@
             node.querySelectorAll?.('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
         }
 
+        // ── Sort engine ──────────────────────────────────────────────────────
+        // Sort courses within each category by their last-updated date. We do
+        // this by walking every course toggle currently in the DOM, grouping
+        // them by their immediate parentElement (LDC renders all course toggles
+        // under one category as siblings of the same parent), and reordering
+        // each group's wrapper element via parent.appendChild(...). Stable for
+        // ties and for missing-date courses (which sink to the bottom).
+        let sortMode = 'none'; // 'none' | 'date-desc' | 'date-asc'
+        let sorting = false;   // reentrancy guard against our own DOM mutations
+
+        function getSortMode() { return sortMode; }
+        function setSortMode(m) {
+            if (m !== 'none' && m !== 'date-desc' && m !== 'date-asc') m = 'none';
+            sortMode = m;
+            applySortIfNeeded();
+        }
+
+        // Find the "row container" — the outermost ancestor of `toggleEl` that
+        // is a direct child of the category's row list. Heuristic: walk up
+        // until we hit an element whose parent contains other siblings that
+        // also (transitively) hold a course toggle. We cap the walk at 6
+        // levels to avoid escaping the category. If we can't find a stable
+        // container, fall back to the toggle itself.
+        function findRowContainer(toggleEl) {
+            let cur = toggleEl;
+            for (let i = 0; i < 6; i++) {
+                const parent = cur.parentElement;
+                if (!parent || parent === document.body) break;
+                // If parent has multiple children that each contain a course toggle,
+                // `cur` is the row container we want to move around.
+                let siblingRows = 0;
+                for (const sib of parent.children) {
+                    if (sib === cur) { siblingRows++; continue; }
+                    if (sib.querySelector?.('[role="button"][aria-label^="Toggle "]')) siblingRows++;
+                }
+                if (siblingRows >= 2) return cur;
+                cur = parent;
+            }
+            return toggleEl;
+        }
+
+        function getCourseLastModified(rowName) {
+            const node = lookup && lookup.get(rowName);
+            return (node && node.lastModified) || 0;
+        }
+
+        function applySortIfNeeded() {
+            if (sortMode === 'none') return;
+            if (!lookup || lookup.size === 0) return;
+            if (sorting) return;
+            sorting = true;
+            try {
+                // Collect all course toggles currently in the DOM.
+                const toggles = document.querySelectorAll('[role="button"][aria-label^="Toggle "]');
+                // Group containers by parent element.
+                const groups = new Map(); // parent → Array<{ container, rowName, t, originalIdx }>
+                toggles.forEach((tg) => {
+                    const label = tg.getAttribute('aria-label') || '';
+                    const cls = treeIndex.classifyAriaRow(label, lookup);
+                    if (cls.kind !== 'course') return;
+                    const container = findRowContainer(tg);
+                    const parent = container.parentElement;
+                    if (!parent) return;
+                    if (!groups.has(parent)) groups.set(parent, []);
+                    const list = groups.get(parent);
+                    list.push({
+                        container,
+                        rowName: cls.name,
+                        t: getCourseLastModified(cls.name),
+                        originalIdx: list.length, // tie-break: preserve current order
+                    });
+                });
+                const dir = sortMode === 'date-desc' ? -1 : 1;
+                for (const [parent, items] of groups) {
+                    if (items.length < 2) continue;
+                    const sorted = items.slice().sort((a, b) => {
+                        // Missing-date items always sink to the bottom regardless of dir.
+                        if (a.t === 0 && b.t === 0) return a.originalIdx - b.originalIdx;
+                        if (a.t === 0) return 1;
+                        if (b.t === 0) return -1;
+                        if (a.t !== b.t) return (a.t - b.t) * dir;
+                        return a.originalIdx - b.originalIdx;
+                    });
+                    // Skip if already in target order (avoid mutation churn).
+                    let same = true;
+                    for (let i = 0; i < sorted.length; i++) {
+                        if (sorted[i].container !== items[i].container) { same = false; break; }
+                    }
+                    if (same) continue;
+                    // Re-append in target order. Using appendChild moves the node.
+                    for (const it of sorted) parent.appendChild(it.container);
+                }
+            } catch (e) {
+                try { console.warn('[LDC] sort failed:', e); } catch (_) {}
+            } finally {
+                sorting = false;
+            }
+        }
+
+        function hasAnyDateMetadata() {
+            if (!lookup) return false;
+            for (const v of lookup.values()) {
+                if (v && v.lastModified > 0) return true;
+            }
+            return false;
+        }
+
         let rowObserver = null;
         function observeRows() {
             if (rowObserver) return rowObserver; // idempotent
             // Initial pass
             document.querySelectorAll('[role="button"][aria-label^="Toggle "]').forEach(injectRowCheckbox);
+            applySortIfNeeded();
 
             let pending = false;
             const queue = [];
             rowObserver = new MutationObserver((mutations) => {
+                if (sorting) return; // ignore mutations caused by our own re-append
                 for (const m of mutations) {
                     for (const n of m.addedNodes) queue.push(n);
                 }
@@ -1173,6 +1360,7 @@
                         pending = false;
                         const batch = queue.splice(0);
                         for (const n of batch) processAddedSubtree(n);
+                        applySortIfNeeded();
                     });
                 }
             });
@@ -1248,6 +1436,7 @@
         return {
             injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes,
             buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
+            getSortMode, setSortMode, applySortIfNeeded, hasAnyDateMetadata,
             get bar() { return bar; },
             get btnFolder() { return btnFolder; },
             get btnSelectAll() { return btnSelectAll; },
@@ -1255,6 +1444,7 @@
             get btnDownload() { return btnDownload; },
             get btnCancel() { return btnCancel; },
             get lblFolder() { return lblFolder; },
+            get selSort() { return selSort; },
         };
     })();
 
@@ -1361,6 +1551,26 @@
 
     function onCancel() { orchestrator.cancel(); }
 
+    const SORT_MODE_KEY = 'ldc.sortMode';
+
+    async function loadSortMode() {
+        try {
+            if (typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function') {
+                const v = await GM.getValue(SORT_MODE_KEY, 'none');
+                return (v === 'date-asc' || v === 'date-desc') ? v : 'none';
+            }
+        } catch (_) {}
+        return 'none';
+    }
+
+    function saveSortMode(mode) {
+        try {
+            if (typeof GM !== 'undefined' && GM && typeof GM.setValue === 'function') {
+                GM.setValue(SORT_MODE_KEY, mode);
+            }
+        } catch (_) {}
+    }
+
     function setupBar() {
         const bar = ui.buildBar();
         ui.btnFolder.addEventListener('click', onChooseFolder);
@@ -1368,6 +1578,11 @@
         ui.btnClear.addEventListener('click', onClearSelection);
         ui.btnDownload.addEventListener('click', onDownload);
         ui.btnCancel.addEventListener('click', onCancel);
+        ui.selSort.addEventListener('change', () => {
+            const mode = ui.selSort.value;
+            ui.setSortMode(mode);
+            saveSortMode(mode);
+        });
         // page-lifetime listener — selection lives until page unload, so the unsubscribe
         // returned by onChange is intentionally discarded.
         selection.onChange(() => ui.updateBar());
@@ -1415,6 +1630,10 @@
         registerMenuCommands();
         await ui.refreshFolderLabel();
 
+        // Restore persisted sort mode (UI only; engine waits until lookup loads).
+        const savedSort = await loadSortMode();
+        if (ui.selSort) ui.selSort.value = savedSort;
+
         // Wait for SPA to render the results container, then load lookup and start observing.
         try {
             await loadLookup();
@@ -1425,6 +1644,19 @@
                 ui.showToast(`Failed to load course list: ${e && e.message}`, 'error', 8000);
             }
         }
+
+        // Now lookup is (possibly) loaded — decide if sort is usable.
+        if (!ui.hasAnyDateMetadata()) {
+            if (ui.selSort) {
+                ui.selSort.disabled = true;
+                ui.selSort.title = '⚠️ No date metadata available; sort disabled';
+                ui.selSort.value = 'none';
+            }
+            ui.setSortMode('none');
+        } else {
+            ui.setSortMode(savedSort);
+        }
+
         ui.observeRows();
     }
 
