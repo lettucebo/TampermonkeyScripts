@@ -44,13 +44,33 @@
 
 1. 安裝 [Tampermonkey](https://www.tampermonkey.net/)
    （Chrome / Edge / Brave 商店都有）
-2. 點以下連結，Tampermonkey 會跳出安裝對話框：
+2. 點以下連結，Tampermonkey 會自動跳出安裝對話框：
 
    👉 **[安裝 ldc-batch-download.user.js](https://raw.githubusercontent.com/lettucebo/LDC-Tools/main/src/ldc-batch-download.user.js)**
 
 3. 點 **Install**
 4. 打開 <https://learningdownloadcenter.microsoft.com/>
    登入後頁首應該會出現藍色的「LDC Batch Downloader」工具列
+
+> **若點連結沒跳安裝對話框、反而看到原始程式碼**：
+>
+> - 確認你已安裝 Tampermonkey 擴充並且已啟用
+> - Chrome 117+ 需要在 `chrome://extensions` 開啟 Tampermonkey 的 **Developer mode** 才能讓 userscript 觸發安裝對話框
+> - 仍不行就改手動：開 Tampermonkey 後台 → **Utilities** → **Import from URL** 貼上面那個 raw URL
+
+## 自動更新
+
+腳本 header 有設定 `@updateURL` / `@downloadURL` 指向 GitHub raw，Tampermonkey
+預設**每天**會檢查一次新版（可在 Tampermonkey 設定 → **Externals** → *Update interval*
+調整成立刻、每小時或關閉）。
+
+當 GitHub 上的 `@version` 比本地高時，Tampermonkey 會自動下載新版並提示。
+
+立即手動觸發：
+
+- Tampermonkey 後台 → 找到 **LDC Batch Downloader** → 右側 **last updated** 欄
+  點 ⟳ icon → 強制檢查
+- 或在 Tampermonkey icon 選單點 **Check for userscript updates**
 
 ## 使用步驟
 
