@@ -191,5 +191,14 @@ eq(courseParser.simplifyCourseCode(42), 42, 'non-string passthrough');
 eq(courseParser.simplifyCourseCode('XX-T00'), 'XX', 'trailing dash trimmed when only T00 follows');
 eq(courseParser.simplifyCourseCode('T00'), '', 'bare T00 strips entirely');
 
+// Contract-pinning nitpicks (PR #3 review)
+eq(courseParser.simplifyCourseCode(courseParser.simplifyCourseCode('AZ-040T00')),
+    'AZ-040',
+    'idempotent — running simplifyCourseCode twice yields the same result');
+eq(courseParser.simplifyCourseCode('AZ-040T00AA'), 'AZ-040T00AA',
+    'T00AA (two trailing letters) NOT stripped — regex only allows zero or one letter');
+eq(courseParser.simplifyCourseCode('AZ-040t00'), 'AZ-040t00',
+    'lowercase t00 NOT stripped — regex is case-sensitive');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
