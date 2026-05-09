@@ -19,12 +19,12 @@
 
 ```
 你選的資料夾/
-├─ AZ-040T00 Automate Administration with PowerShell/
-│  ├─ AZ-040T00-English/
-│  │  ├─ AZ-040T00A-ENU-Change-Log.pdf
+├─ AZ-040 Automate Administration with PowerShell/      ← 注意 T00 已自動省略
+│  ├─ AZ-040-English/
+│  │  ├─ AZ-040T00A-ENU-Change-Log.pdf                  ← 檔名保留 Microsoft 原命名
 │  │  ├─ AZ-040T00A-ENU-Powerpoint.zip
 │  │  └─ AZ-040T00A-ENU-TrainerPrepGuide.pdf
-│  └─ AZ-040T00-Japanese/
+│  └─ AZ-040-Japanese/
 │     ├─ AZ-040T00-PowerPoint.ja-JP.zip
 │     └─ AZ-040T00-Readme.ja-JP.txt
 └─ AI-3017 Microsoft AI for business leaders/
@@ -32,6 +32,17 @@
    ├─ AI-3017-Chinese Simplified/
    └─ ...
 ```
+
+> **資料夾命名規則**：課程編號若以 `T00` 或 `T00A`（Microsoft 訓練課程版本後綴）結尾，
+> 會自動省略，例如 `AZ-040T00` → `AZ-040`、`PL-300T00A` → `PL-300`。
+> 沒有 T00 的編號（如 `AZ-1002`、`AI-3017`、`AZ-2003`）維持不變。
+> **檔名本身**（如 `AZ-040T00A-ENU-Powerpoint.zip`）會保留 Microsoft 原始命名，
+> 不會被改寫。
+
+> **從 0.2.x 升上來的使用者**：先前下載的資料夾（`AZ-040T00 ...`）腳本會把它當成
+> 不存在的目錄，重新下載到新名稱（`AZ-040 ...`）。如果想要沿用既有檔案、避免重下，
+> 把舊資料夾手動改名（去掉 `T00`、`T00A` 後綴）即可，子資料夾也一併改名。
+
 
 ## 瀏覽器需求
 

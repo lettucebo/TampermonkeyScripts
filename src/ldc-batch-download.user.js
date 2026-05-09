@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.2.1
+// @version      0.3.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -272,14 +272,19 @@
     const courseParser = (() => {
         // Split "AZ-040T00: Automate Administration with PowerShell (Japanese)"
         // → { code, title, languageHint }
+        // The returned `code` has any trailing T00 / T00A / T00B / ... stripped (see
+        // simplifyCourseCode below). This is intentional — the API row name
+        // (`AZ-040T00: ...`) is still used verbatim as the lookup map key and
+        // selection state's stable ID; only the surfaced `code` is simplified so
+        // that downstream consumers (folder names) get the cleaner form.
         function parseRowName(name) {
             if (!name || typeof name !== 'string') return { code: '', title: '', languageHint: null };
             const idx = name.indexOf(':');
-            let code, rest;
-            if (idx === -1) { code = ''; rest = name.trim(); }
-            else { code = name.slice(0, idx).trim(); rest = name.slice(idx + 1).trim(); }
+            let rawCode, rest;
+            if (idx === -1) { rawCode = ''; rest = name.trim(); }
+            else { rawCode = name.slice(0, idx).trim(); rest = name.slice(idx + 1).trim(); }
             const { title, languageHint } = stripLanguageSuffix(rest);
-            return { code, title, languageHint };
+            return { code: simplifyCourseCode(rawCode), title, languageHint };
         }
 
         function stripLanguageSuffix(title) {
@@ -287,6 +292,18 @@
             const m = title.match(/^(.*)\s*\(([^()]+)\)\s*$/);
             if (m) return { title: m[1].trim(), languageHint: m[2].trim() };
             return { title: title.trim(), languageHint: null };
+        }
+
+        // Strip Microsoft Official Curriculum version suffix: T00, T00A, T00B, ...
+        // The `T00` is the original release, `T00<letter>` are revisions. The user
+        // organises folders without this suffix (e.g. `AZ-040` rather than
+        // `AZ-040T00`), so we surface the simplified form.
+        // - Only `T00` family is stripped (per spec); T01, T02, L100 are left as-is.
+        // - A trailing dash is trimmed for the rare `XX-T00` case so we don't
+        //   leave a lone `XX-`.
+        function simplifyCourseCode(code) {
+            if (!code || typeof code !== 'string') return code;
+            return code.replace(/T00[A-Z]?$/, '').replace(/-$/, '');
         }
 
         // file.language examples: "Japanese (ja-jp)", "English", "Chinese Simplified (zh-cn)"
@@ -299,6 +316,7 @@
 
         // Take a blob URL like "Azure/AZ-040T00: Automate Administration with PowerShell (Japanese)/file.zip"
         // and return the canonical course folder name from the second segment, with ": " → " ".
+        // The code component is also run through simplifyCourseCode via parseRowName.
         function canonicalCourseDirName(blobUrl) {
             if (!blobUrl) return '';
             const segs = String(blobUrl).split('/');
@@ -311,7 +329,7 @@
             return courseSeg.replace(/:\s*/g, ' ');
         }
 
-        return { parseRowName, stripLanguageSuffix, resolveLanguage, canonicalCourseDirName };
+        return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName };
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
