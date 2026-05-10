@@ -261,6 +261,12 @@ eq(courseParser.parseDate(1700000000000), 1700000000000, 'parseDate epoch_ms num
 eq(courseParser.parseDate('1700000000'), 1700000000 * 1000, 'parseDate epoch_s string');
 eq(courseParser.parseDate('1700000000000'), 1700000000000, 'parseDate epoch_ms string');
 
+// parseDate: 1e12 boundary cases (the heuristic switches between seconds and milliseconds here)
+// 1e12 ms is 2001-09-09; 1e12 s is year 33658, so values >= 1e12 cannot reasonably be seconds.
+eq(courseParser.parseDate(999999999999), 999999999999 * 1000, 'parseDate just below 1e12 → treated as seconds');
+eq(courseParser.parseDate(1e12), 1e12, 'parseDate exactly 1e12 → treated as ms (>= boundary)');
+eq(courseParser.parseDate(1000000000001), 1000000000001, 'parseDate just above 1e12 → treated as ms');
+
 // parseDate: Date instance
 eq(courseParser.parseDate(new Date(Date.UTC(2024, 0, 15))), Date.UTC(2024, 0, 15), 'parseDate Date instance');
 

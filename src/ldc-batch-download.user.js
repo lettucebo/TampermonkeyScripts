@@ -375,6 +375,9 @@
 
         // Aggregate a course row's "last updated" timestamp from its files.
         // Returns the max parsed epoch_ms across files, or 0 if none parse.
+        // This intentionally mirrors the value the LDC SPA shows in its
+        // "Updated: <date>" badge next to each course row, so sorting matches
+        // what the user already sees in the page.
         function courseLastModified(files) {
             if (!Array.isArray(files) || files.length === 0) return 0;
             let max = 0;
@@ -471,6 +474,10 @@
                 }
             }
             if (map.size > 0 && withDate === 0) {
+                // Surface a hint via console only — the boot path will also
+                // disable the sort dropdown and warn there. This earlier warn
+                // is kept for cases where buildLookup is called outside of
+                // the boot flow (e.g. via window.__ldc.api.getSearchTree).
                 try { console.warn('[LDC] No date metadata found on any course file; sort-by-updated will be disabled.'); } catch (_) {}
             }
             return map;
@@ -1271,6 +1278,13 @@
                 if (siblingRows >= 2) return cur;
                 cur = parent;
             }
+            // Walked the full 6-level cap without finding a multi-row parent.
+            // This means the SPA layout has changed in a way our heuristic
+            // doesn't recognise; sorting will silently no-op for this row.
+            // Surface a warning so the regression is detectable in DevTools.
+            try {
+                console.warn('[LDC] findRowContainer: could not locate row container for toggle', toggleEl.getAttribute?.('aria-label'));
+            } catch (_) {}
             return toggleEl;
         }
 
@@ -1349,8 +1363,14 @@
 
             let pending = false;
             const queue = [];
+            // The "if (sorting) return" guard that lived here used to try to
+            // ignore mutations caused by our own re-appendChild calls inside
+            // applySortIfNeeded. It was effectively dead code: MutationObserver
+            // callbacks are delivered as microtasks, and the synchronous
+            // `sorting = false` in applySortIfNeeded's `finally` runs before
+            // any of those microtasks. We rely on applySortIfNeeded's own
+            // "skip if already in target order" early-return to avoid loops.
             rowObserver = new MutationObserver((mutations) => {
-                if (sorting) return; // ignore mutations caused by our own re-append
                 for (const m of mutations) {
                     for (const n of m.addedNodes) queue.push(n);
                 }
@@ -1563,10 +1583,10 @@
         return 'none';
     }
 
-    function saveSortMode(mode) {
+    async function saveSortMode(mode) {
         try {
             if (typeof GM !== 'undefined' && GM && typeof GM.setValue === 'function') {
-                GM.setValue(SORT_MODE_KEY, mode);
+                await GM.setValue(SORT_MODE_KEY, mode);
             }
         } catch (_) {}
     }
@@ -1578,10 +1598,10 @@
         ui.btnClear.addEventListener('click', onClearSelection);
         ui.btnDownload.addEventListener('click', onDownload);
         ui.btnCancel.addEventListener('click', onCancel);
-        ui.selSort.addEventListener('change', () => {
+        ui.selSort.addEventListener('change', async () => {
             const mode = ui.selSort.value;
             ui.setSortMode(mode);
-            saveSortMode(mode);
+            await saveSortMode(mode);
         });
         // page-lifetime listener — selection lives until page unload, so the unsubscribe
         // returned by onChange is intentionally discarded.
@@ -1649,11 +1669,19 @@
         if (!ui.hasAnyDateMetadata()) {
             if (ui.selSort) {
                 ui.selSort.disabled = true;
+                ui.selSort.setAttribute('aria-disabled', 'true');
                 ui.selSort.title = '⚠️ No date metadata available; sort disabled';
                 ui.selSort.value = 'none';
             }
             ui.setSortMode('none');
+            // Warn AFTER the dropdown has been visibly disabled so the message
+            // order matches what the user sees.
+            try { console.warn('[LDC] No date metadata found on any course file; sort-by-updated disabled.'); } catch (_) {}
         } else {
+            if (ui.selSort) {
+                ui.selSort.disabled = false;
+                ui.selSort.removeAttribute('aria-disabled');
+            }
             ui.setSortMode(savedSort);
         }
 
