@@ -39,7 +39,49 @@ const courseParser = (() => {
         if (code) return title ? `${code} ${title}` : code;
         return courseSeg.replace(/:\s*/g, ' ');
     }
-    return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName };
+    function parseDate(value) {
+        if (value === null || value === undefined || value === '') return 0;
+        if (value instanceof Date) {
+            const t = value.getTime();
+            return Number.isFinite(t) ? t : 0;
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+        }
+        if (typeof value === 'string') {
+            const s = value.trim();
+            if (!s) return 0;
+            if (/^-?\d+(\.\d+)?$/.test(s)) {
+                const n = Number(s);
+                if (!Number.isFinite(n)) return 0;
+                return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+            }
+            const t = Date.parse(s);
+            return Number.isFinite(t) ? t : 0;
+        }
+        return 0;
+    }
+    const FILE_DATE_FIELDS = ['lastModified', 'modifiedDate', 'lastUpdated', 'updatedAt', 'updateDate', 'modifiedOn', 'publishDate', 'publishedDate', 'createdDate'];
+    function pickFileDate(file) {
+        if (!file) return 0;
+        for (const k of FILE_DATE_FIELDS) {
+            if (k in file) {
+                const t = parseDate(file[k]);
+                if (t > 0) return t;
+            }
+        }
+        return 0;
+    }
+    function courseLastModified(files) {
+        if (!Array.isArray(files) || files.length === 0) return 0;
+        let max = 0;
+        for (const f of files) {
+            const t = pickFileDate(f);
+            if (t > max) max = t;
+        }
+        return max;
+    }
+    return { parseRowName, stripLanguageSuffix, simplifyCourseCode, resolveLanguage, canonicalCourseDirName, parseDate, pickFileDate, courseLastModified };
 })();
 
 const MAX_FILENAME_LEN = 150;
@@ -199,6 +241,110 @@ eq(courseParser.simplifyCourseCode('AZ-040T00AA'), 'AZ-040T00AA',
     'T00AA (two trailing letters) NOT stripped — regex only allows zero or one letter');
 eq(courseParser.simplifyCourseCode('AZ-040t00'), 'AZ-040t00',
     'lowercase t00 NOT stripped — regex is case-sensitive');
+
+// ── parseDate / pickFileDate / courseLastModified ──────────────────────────
+// parseDate: missing inputs → 0
+eq(courseParser.parseDate(undefined), 0, 'parseDate undefined → 0');
+eq(courseParser.parseDate(null), 0, 'parseDate null → 0');
+eq(courseParser.parseDate(''), 0, 'parseDate empty string → 0');
+eq(courseParser.parseDate('   '), 0, 'parseDate whitespace → 0');
+eq(courseParser.parseDate('not-a-date'), 0, 'parseDate garbage → 0');
+eq(courseParser.parseDate({}), 0, 'parseDate object → 0');
+
+// parseDate: ISO strings
+eq(courseParser.parseDate('2024-01-15T00:00:00Z'), Date.UTC(2024, 0, 15), 'parseDate ISO');
+eq(courseParser.parseDate('2024-01-15'), Date.parse('2024-01-15'), 'parseDate date-only');
+
+// parseDate: numeric epochs (heuristic: < 1e12 = seconds, else ms)
+eq(courseParser.parseDate(1700000000), 1700000000 * 1000, 'parseDate epoch_s number');
+eq(courseParser.parseDate(1700000000000), 1700000000000, 'parseDate epoch_ms number');
+eq(courseParser.parseDate('1700000000'), 1700000000 * 1000, 'parseDate epoch_s string');
+eq(courseParser.parseDate('1700000000000'), 1700000000000, 'parseDate epoch_ms string');
+
+// parseDate: 1e12 boundary cases (the heuristic switches between seconds and milliseconds here)
+// 1e12 ms is 2001-09-09; 1e12 s is year 33658, so values >= 1e12 cannot reasonably be seconds.
+eq(courseParser.parseDate(999999999999), 999999999999 * 1000, 'parseDate just below 1e12 → treated as seconds');
+eq(courseParser.parseDate(1e12), 1e12, 'parseDate exactly 1e12 → treated as ms (>= boundary)');
+eq(courseParser.parseDate(1000000000001), 1000000000001, 'parseDate just above 1e12 → treated as ms');
+
+// parseDate: Date instance
+eq(courseParser.parseDate(new Date(Date.UTC(2024, 0, 15))), Date.UTC(2024, 0, 15), 'parseDate Date instance');
+
+// pickFileDate: probes multiple field names
+eq(courseParser.pickFileDate({ lastModified: '2024-03-01T00:00:00Z' }), Date.UTC(2024, 2, 1), 'pickFileDate lastModified');
+eq(courseParser.pickFileDate({ modifiedDate: '2024-03-01T00:00:00Z' }), Date.UTC(2024, 2, 1), 'pickFileDate modifiedDate');
+eq(courseParser.pickFileDate({ updatedAt: '2024-03-01T00:00:00Z' }), Date.UTC(2024, 2, 1), 'pickFileDate updatedAt');
+eq(courseParser.pickFileDate({ publishDate: '2024-03-01T00:00:00Z' }), Date.UTC(2024, 2, 1), 'pickFileDate publishDate');
+eq(courseParser.pickFileDate({ unrelated: '2024-03-01T00:00:00Z' }), 0, 'pickFileDate unknown field → 0');
+eq(courseParser.pickFileDate({}), 0, 'pickFileDate empty → 0');
+eq(courseParser.pickFileDate(null), 0, 'pickFileDate null → 0');
+// First parseable field wins (probed in declared order, lastModified before modifiedDate)
+eq(courseParser.pickFileDate({ lastModified: '2024-01-01T00:00:00Z', modifiedDate: '2025-01-01T00:00:00Z' }),
+    Date.UTC(2024, 0, 1),
+    'pickFileDate first defined field wins (lastModified before modifiedDate)');
+// Unparseable first field falls through to next
+eq(courseParser.pickFileDate({ lastModified: 'garbage', modifiedDate: '2025-01-01T00:00:00Z' }),
+    Date.UTC(2025, 0, 1),
+    'pickFileDate falls through unparseable field');
+
+// courseLastModified: max of all files
+eq(courseParser.courseLastModified([
+    { lastModified: '2024-01-01T00:00:00Z' },
+    { lastModified: '2024-06-01T00:00:00Z' },
+    { lastModified: '2024-03-01T00:00:00Z' },
+]), Date.UTC(2024, 5, 1), 'courseLastModified picks max across files');
+
+// Mixed string + numeric epoch
+eq(courseParser.courseLastModified([
+    { lastModified: '2024-01-01T00:00:00Z' },
+    { lastModified: Date.UTC(2024, 6, 1) }, // ms numeric
+]), Date.UTC(2024, 6, 1), 'courseLastModified mixed string/number');
+
+// Some files missing date → ignored, max of the rest returned
+eq(courseParser.courseLastModified([
+    { lastModified: '2024-01-01T00:00:00Z' },
+    {},
+    { lastModified: null },
+]), Date.UTC(2024, 0, 1), 'courseLastModified ignores missing-date files');
+
+// All files missing date → 0
+eq(courseParser.courseLastModified([{}, { foo: 1 }, { lastModified: null }]), 0, 'courseLastModified all missing → 0');
+
+// Empty / non-array → 0
+eq(courseParser.courseLastModified([]), 0, 'courseLastModified empty → 0');
+eq(courseParser.courseLastModified(null), 0, 'courseLastModified null → 0');
+eq(courseParser.courseLastModified(undefined), 0, 'courseLastModified undefined → 0');
+
+// ── Sort comparator ─────────────────────────────────────────────────────────
+// Re-implement the comparator from the userscript so we can assert its
+// behaviour without a DOM. Keep this in sync with applySortIfNeeded().
+function makeComparator(mode) {
+    const dir = mode === 'date-desc' ? -1 : 1;
+    return (a, b) => {
+        if (a.t === 0 && b.t === 0) return a.originalIdx - b.originalIdx;
+        if (a.t === 0) return 1;
+        if (b.t === 0) return -1;
+        if (a.t !== b.t) return (a.t - b.t) * dir;
+        return a.originalIdx - b.originalIdx;
+    };
+}
+
+(function testSortComparator() {
+    const items = [
+        { name: 'A', t: Date.UTC(2024, 0, 1), originalIdx: 0 },
+        { name: 'B', t: Date.UTC(2024, 5, 1), originalIdx: 1 },
+        { name: 'C', t: 0,                    originalIdx: 2 }, // missing date
+        { name: 'D', t: Date.UTC(2024, 2, 1), originalIdx: 3 },
+        { name: 'E', t: 0,                    originalIdx: 4 }, // missing date
+        { name: 'F', t: Date.UTC(2024, 5, 1), originalIdx: 5 }, // tie with B
+    ];
+    const desc = items.slice().sort(makeComparator('date-desc')).map(x => x.name);
+    eq(desc, ['B', 'F', 'D', 'A', 'C', 'E'],
+        'comparator desc: newest first; ties keep original order; missing dates pinned to tail (stable)');
+    const asc = items.slice().sort(makeComparator('date-asc')).map(x => x.name);
+    eq(asc, ['A', 'D', 'B', 'F', 'C', 'E'],
+        'comparator asc: oldest first; ties keep original order; missing dates pinned to tail (stable)');
+})();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -124,6 +124,23 @@ Click the Tampermonkey icon → LDC Batch Downloader to access:
   (default is 2)
 - `LDC: Token status` — show how long the current auth token is valid for
 
+## Sort by last-updated date
+
+There is a `Sort:` dropdown on the right side of the toolbar with three modes:
+
+- `Sort: Default` — keep LDC's original order
+- `Sort: Updated ↓ (newest first)` — sort by most-recent update, newest first
+- `Sort: Updated ↑ (oldest first)` — sort by most-recent update, oldest first
+
+Behavior:
+
+- **Sorting only happens within each category.** The order of the categories themselves never changes.
+- A course's "updated date" is the maximum `lastModified` across all of its files.
+- Courses without any date metadata stably sink to the bottom of their category.
+- The order is reapplied when you switch modes or expand a new category. Switching back to `Default` restores LDC's original order on the next page reload.
+- Your choice is persisted with `GM.setValue` and restored the next time you open the site.
+- If the LDC API ever omits all date fields, the dropdown auto-disables and shows a ⚠️ tooltip.
+
 ## Behavior details
 
 | Situation | Handling |

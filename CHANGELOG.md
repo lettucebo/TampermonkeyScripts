@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-09
+
+### Added
+- New `Sort:` dropdown in the toolbar with three modes (`Default`,
+  `Updated ↓ (newest first)`, `Updated ↑ (oldest first)`). Sorting only
+  reorders courses **within each category** — the order of the categories
+  themselves is left untouched. The chosen mode is persisted via
+  `GM.setValue` and restored on the next page load.
+- Courses without any parseable date metadata stably sink to the bottom of
+  their category. If no course in the API has any date field at all, the
+  sort dropdown auto-disables with a ⚠️ tooltip.
+- Pure helpers in `courseParser` (`parseDate`, `pickFileDate`,
+  `courseLastModified`) so the sort source is testable without a browser.
+  Tests grew 56 → 93 cases.
+
+### Changed
+- Sort `<select>` keeps `aria-disabled` in sync with `disabled` for
+  better screen-reader behaviour.
+- `courseLastModified` is documented to mirror the SPA's `Updated:` badge,
+  so the sort order matches what users already see in the page.
+
+### Fixed
+- `findRowContainer` now `console.warn`s when its 6-level walk exhausts
+  without finding a row container, so future LDC layout regressions are
+  detectable instead of failing silently.
+- `saveSortMode` now awaits `GM.setValue` so the persisted choice survives
+  a fast tab close.
+- Removed a dead `if (sorting) return` MutationObserver guard whose
+  `sorting` flag was always already reset by the time the microtask fired;
+  the same-order short-circuit inside `applySortIfNeeded` is the real
+  re-entrancy guard.
+
 ## [0.3.0] — 2026-05-09
 
 ### Added
@@ -50,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lettucebo/LDC-Tools/releases/tag/v0.2.0
