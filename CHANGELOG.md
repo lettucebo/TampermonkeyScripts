@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into a single change notification, so the range select doesn't churn
   the toolbar count.
 
+### Fixed
+- Defer the DOM `checked` sync for Shift-range selection into a
+  `queueMicrotask` so the browser's legacy-canceled-activation step
+  (which runs after our click handler because we `preventDefault`)
+  cannot revert the clicked row's `checked` back to its pre-click
+  value. Without this defer, the clicked row's checkbox would visually
+  appear unchecked even though the selection state correctly included
+  it.
+
 ## [0.4.0] — 2026-05-09
 
 ### Added

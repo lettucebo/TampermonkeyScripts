@@ -1281,10 +1281,24 @@
                 if (!range || range.length === 0) return;
                 e.preventDefault();
                 selection.addMany(range);
-                for (const rid of range) {
-                    const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
-                    if (other) other.checked = true;
-                }
+                // The DOM `checked` sync has to run AFTER the browser's
+                // legacy-canceled-activation step. That step is part of the
+                // click event dispatch algorithm: pre-click toggles the
+                // clicked checkbox, our handler preventDefault's, and then
+                // the browser reverts the clicked checkbox's `checked`
+                // back to its pre-click value — which would clobber a
+                // synchronous `cb.checked = true` here for the clicked
+                // row (the other rows in the range are unaffected, hence
+                // the original bug where every row except the clicked
+                // one appeared checked). Microtasks run after the event
+                // dispatch completes and before the next paint, so this
+                // is visually indistinguishable from a synchronous write.
+                queueMicrotask(() => {
+                    for (const rid of range) {
+                        const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
+                        if (other) other.checked = true;
+                    }
+                });
                 try { window.getSelection()?.removeAllRanges(); } catch (_) {}
             });
             cb.addEventListener('change', (e) => {
