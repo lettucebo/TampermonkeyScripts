@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.4.0
+// @version      0.5.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -678,6 +678,13 @@
         return {
             has: (id) => set.has(id),
             add: (id) => { if (!set.has(id)) { set.add(id); notify(); } },
+            addMany: (ids) => {
+                let changed = false;
+                for (const id of ids) {
+                    if (!set.has(id)) { set.add(id); changed = true; }
+                }
+                if (changed) notify();
+            },
             remove: (id) => { if (set.has(id)) { set.delete(id); notify(); } },
             toggle: (id) => { if (set.has(id)) set.delete(id); else set.add(id); notify(); },
             clear: () => { if (set.size) { set.clear(); notify(); } },
@@ -963,6 +970,8 @@
                 display: inline-flex;
                 align-items: center;
                 margin-right: 4px;
+                user-select: none;
+                -webkit-user-select: none;
             }
 
             #ldc-progress {
@@ -1192,6 +1201,63 @@
         let lookup = null;
         function setLookup(l) { lookup = l; }
 
+        // Anchor for Shift-range selection: id of the most recently
+        // clicked (non-shift) row. Reset when the user uses the
+        // toolbar "Select all visible" or "Clear selection".
+        let lastAnchorId = null;
+        function clearAnchor() { lastAnchorId = null; }
+
+        // Shift+Click delivery: the click handler stashes the computed
+        // range here and lets the browser's natural toggle proceed. The
+        // change handler — which fires AFTER the toggle is committed —
+        // reads this back, force-corrects `cb.checked = true`, and
+        // applies the rest of the range. This avoids any reliance on
+        // preventDefault + microtask timing for the legacy-canceled-
+        // activation revert, which proved unreliable in practice.
+        // Single-threaded JS means there's no real concurrency hazard.
+        let pendingShiftRange = null;
+
+        // Compute the inclusive Shift-range between two row ids.
+        // Returns an array of row ids in DOM order, or null when the
+        // range cannot be established (anchor missing/invisible,
+        // different category, etc.) — in which case Shift+Click should
+        // fall through to a plain click.
+        function getRangeBetween(anchorId, currentId) {
+            if (!anchorId || !currentId) return null;
+            if (anchorId === currentId) return [currentId];
+            const sel = (rid) => `input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`;
+            const anchorCb = document.querySelector(sel(anchorId));
+            const currentCb = document.querySelector(sel(currentId));
+            if (!anchorCb || !currentCb) return null;
+            // Both endpoints must be visible.
+            if (anchorCb.offsetParent === null || currentCb.offsetParent === null) return null;
+            const anchorToggle = anchorCb.closest('[role="button"][aria-label^="Toggle "]');
+            const currentToggle = currentCb.closest('[role="button"][aria-label^="Toggle "]');
+            if (!anchorToggle || !currentToggle) return null;
+            const anchorContainer = findRowContainer(anchorToggle);
+            const currentContainer = findRowContainer(currentToggle);
+            if (!anchorContainer || !currentContainer) return null;
+            const parent = anchorContainer.parentElement;
+            // Same-category constraint: both row containers must share the
+            // same parent in the DOM (LDC renders all course rows of one
+            // category as siblings of a single parent).
+            if (!parent || parent !== currentContainer.parentElement) return null;
+            const children = Array.from(parent.children);
+            const ai = children.indexOf(anchorContainer);
+            const ci = children.indexOf(currentContainer);
+            if (ai === -1 || ci === -1) return null;
+            const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+            const ids = [];
+            for (let i = lo; i <= hi; i++) {
+                const innerCb = children[i].querySelector?.('input.ldc-row-checkbox');
+                if (!innerCb) continue;
+                if (innerCb.offsetParent === null) continue;
+                const rid = innerCb.getAttribute('data-ldc-row-id');
+                if (rid) ids.push(rid);
+            }
+            return ids;
+        }
+
         function injectRowCheckbox(toggleEl) {
             if (!toggleEl || toggleEl.dataset.ldcEnhanced === '1') return;
             const label = toggleEl.getAttribute('aria-label') || '';
@@ -1204,9 +1270,61 @@
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
                 cb.addEventListener(evt, (e) => e.stopPropagation());
             });
+            // Shift-range: suppress the browser's text-selection behaviour
+            // that kicks in on shift+mousedown, so the page doesn't get
+            // a giant highlight from the previous click to here.
+            cb.addEventListener('mousedown', (e) => {
+                if (e.shiftKey) e.preventDefault();
+            });
+            // Shift+Click: stash the computed range so the upcoming
+            // `change` event (which fires after the browser's natural
+            // toggle is committed) can apply it. Crucially, we do NOT
+            // preventDefault here — letting the browser toggle the
+            // clicked checkbox is what lets us avoid fighting the
+            // legacy-canceled-activation revert dance. Same-category
+            // and visibility constraints are enforced by
+            // getRangeBetween; if it returns null we clear the pending
+            // range so the change handler falls through to a normal
+            // single-row click.
+            cb.addEventListener('click', (e) => {
+                if (!e.shiftKey) {
+                    pendingShiftRange = null;
+                    return;
+                }
+                const range = getRangeBetween(lastAnchorId, id);
+                pendingShiftRange = (range && range.length > 0) ? range : null;
+                if (pendingShiftRange) {
+                    try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+                }
+            });
             cb.addEventListener('change', (e) => {
                 e.stopPropagation();
+                const range = pendingShiftRange;
+                pendingShiftRange = null;
+                if (range) {
+                    // Shift+Click: always SELECT the entire range,
+                    // including the clicked row. The browser just toggled
+                    // `cb.checked` as part of its natural click activation;
+                    // force it back to `true` no matter which direction
+                    // the toggle went (Shift+Click never deselects, per
+                    // spec). Anchor is intentionally NOT updated, so
+                    // repeat Shift+Clicks keep pivoting on the same
+                    // anchor.
+                    cb.checked = true;
+                    selection.addMany(range);
+                    for (const rid of range) {
+                        if (rid === id) continue;
+                        const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
+                        if (other) other.checked = true;
+                    }
+                    return;
+                }
+                // Plain click (incl. Ctrl/⌘+Click on a checkbox list,
+                // which the browser handles the same way): mirror
+                // `cb.checked` into selection state and update the
+                // anchor for the next potential Shift+Click.
                 if (cb.checked) selection.add(id); else selection.remove(id);
+                lastAnchorId = id;
             });
             const wrap = el('span', { class: 'ldc-row-wrap' }, [cb]);
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
@@ -1454,7 +1572,7 @@
         }
 
         return {
-            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes,
+            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes, clearAnchor,
             buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
             getSortMode, setSortMode, applySortIfNeeded, hasAnyDateMetadata,
             get bar() { return bar; },
@@ -1506,11 +1624,13 @@
                 cb.checked = true;
             }
         });
+        ui.clearAnchor();
     }
 
     function onClearSelection() {
         selection.clear();
         ui.refreshAllCheckboxes();
+        ui.clearAnchor();
     }
 
     async function onDownload() {

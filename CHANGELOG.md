@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-11
+
+### Added
+- **Shift+Click range selection on course checkboxes.** Plain click on
+  a checkbox still toggles that one row, but a subsequent **Shift+Click**
+  on another row now bulk-selects every visible course between the last
+  clicked row (the "anchor") and this one, inclusive. The range is
+  intentionally limited to **the same category** — Shift+Click across
+  categories (e.g. Azure → Microsoft 365) falls through to a normal
+  single-row click. Collapsed / hidden rows are not included.
+- Repeated Shift+Click keeps pivoting around the same anchor (standard
+  Windows Explorer / Outlook behaviour). The anchor is reset by a plain
+  click on any row, or by using the toolbar's `Select all visible` /
+  `Clear selection` buttons.
+- New `selection.addMany(ids)` helper that batches multiple selections
+  into a single change notification, so the range select doesn't churn
+  the toolbar count.
+
+### Fixed
+- Make sure Shift+Click also visually checks the clicked row (the
+  range's last endpoint). Drive Shift-range selection from the
+  `change` event instead of `click` + `preventDefault`: stash the
+  computed range in the click handler and apply it after the browser
+  has committed its natural toggle. The previous attempt that used
+  `preventDefault` + `queueMicrotask` did not reliably defer the DOM
+  `checked` sync past the browser's legacy-canceled-activation
+  revert, which left the clicked row visually unchecked even though
+  the selection state correctly included it.
+
 ## [0.4.0] — 2026-05-09
 
 ### Added
@@ -82,7 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lettucebo/LDC-Tools/releases/tag/v0.2.0
