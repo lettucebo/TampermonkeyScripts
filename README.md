@@ -105,6 +105,10 @@ To trigger a check immediately:
      pick it again next time
 2. **Tick courses**: check the courses you want to download (across
    categories and languages is fine)
+   - **Click** a checkbox to toggle that one row
+   - **Shift+Click** another row to bulk-select every visible course
+     between the last clicked row and this one (range is limited to
+     courses inside the **same category**)
 3. **Download**: click `⬇ Download selected`
    - A confirmation dialog shows up first (course count / file count /
      total size)

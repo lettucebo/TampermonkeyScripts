@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.4.0
+// @version      0.5.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -678,6 +678,13 @@
         return {
             has: (id) => set.has(id),
             add: (id) => { if (!set.has(id)) { set.add(id); notify(); } },
+            addMany: (ids) => {
+                let changed = false;
+                for (const id of ids) {
+                    if (!set.has(id)) { set.add(id); changed = true; }
+                }
+                if (changed) notify();
+            },
             remove: (id) => { if (set.has(id)) { set.delete(id); notify(); } },
             toggle: (id) => { if (set.has(id)) set.delete(id); else set.add(id); notify(); },
             clear: () => { if (set.size) { set.clear(); notify(); } },
@@ -963,6 +970,8 @@
                 display: inline-flex;
                 align-items: center;
                 margin-right: 4px;
+                user-select: none;
+                -webkit-user-select: none;
             }
 
             #ldc-progress {
@@ -1192,6 +1201,53 @@
         let lookup = null;
         function setLookup(l) { lookup = l; }
 
+        // Anchor for Shift-range selection: id of the most recently
+        // clicked (non-shift) row. Reset when the user uses the
+        // toolbar "Select all visible" or "Clear selection".
+        let lastAnchorId = null;
+        function clearAnchor() { lastAnchorId = null; }
+
+        // Compute the inclusive Shift-range between two row ids.
+        // Returns an array of row ids in DOM order, or null when the
+        // range cannot be established (anchor missing/invisible,
+        // different category, etc.) — in which case Shift+Click should
+        // fall through to a plain click.
+        function getRangeBetween(anchorId, currentId) {
+            if (!anchorId || !currentId) return null;
+            if (anchorId === currentId) return [currentId];
+            const sel = (rid) => `input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`;
+            const anchorCb = document.querySelector(sel(anchorId));
+            const currentCb = document.querySelector(sel(currentId));
+            if (!anchorCb || !currentCb) return null;
+            // Both endpoints must be visible.
+            if (anchorCb.offsetParent === null || currentCb.offsetParent === null) return null;
+            const anchorToggle = anchorCb.closest('[role="button"][aria-label^="Toggle "]');
+            const currentToggle = currentCb.closest('[role="button"][aria-label^="Toggle "]');
+            if (!anchorToggle || !currentToggle) return null;
+            const anchorContainer = findRowContainer(anchorToggle);
+            const currentContainer = findRowContainer(currentToggle);
+            if (!anchorContainer || !currentContainer) return null;
+            const parent = anchorContainer.parentElement;
+            // Same-category constraint: both row containers must share the
+            // same parent in the DOM (LDC renders all course rows of one
+            // category as siblings of a single parent).
+            if (!parent || parent !== currentContainer.parentElement) return null;
+            const children = Array.from(parent.children);
+            const ai = children.indexOf(anchorContainer);
+            const ci = children.indexOf(currentContainer);
+            if (ai === -1 || ci === -1) return null;
+            const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+            const ids = [];
+            for (let i = lo; i <= hi; i++) {
+                const innerCb = children[i].querySelector?.('input.ldc-row-checkbox');
+                if (!innerCb) continue;
+                if (innerCb.offsetParent === null) continue;
+                const rid = innerCb.getAttribute('data-ldc-row-id');
+                if (rid) ids.push(rid);
+            }
+            return ids;
+        }
+
         function injectRowCheckbox(toggleEl) {
             if (!toggleEl || toggleEl.dataset.ldcEnhanced === '1') return;
             const label = toggleEl.getAttribute('aria-label') || '';
@@ -1204,9 +1260,40 @@
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
                 cb.addEventListener(evt, (e) => e.stopPropagation());
             });
+            // Shift-range: suppress the browser's text-selection behaviour
+            // that kicks in on shift+mousedown, so the page doesn't get
+            // a giant highlight from the previous click to here.
+            cb.addEventListener('mousedown', (e) => {
+                if (e.shiftKey) e.preventDefault();
+            });
+            // Shift+Click: extend selection from the last-clicked anchor to
+            // this row inclusive, same-category only. We preventDefault on
+            // the click — that cancels both the default toggle AND the
+            // subsequent `change` event, so we can apply our own state.
+            // Anchor is intentionally NOT updated (standard Windows
+            // behaviour: repeated shift-clicks pivot around the same
+            // anchor). Falls through to a normal click when there is no
+            // anchor, the anchor is in a different category, or both
+            // endpoints aren't currently visible.
+            cb.addEventListener('click', (e) => {
+                if (!e.shiftKey) return;
+                const range = getRangeBetween(lastAnchorId, id);
+                if (!range || range.length === 0) return;
+                e.preventDefault();
+                selection.addMany(range);
+                for (const rid of range) {
+                    const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
+                    if (other) other.checked = true;
+                }
+                try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+            });
             cb.addEventListener('change', (e) => {
                 e.stopPropagation();
                 if (cb.checked) selection.add(id); else selection.remove(id);
+                // A non-shift toggle (including plain click and Ctrl/⌘+Click)
+                // is what makes this row the new anchor. Shift+Click cancels
+                // the change event upstream, so it never reaches here.
+                lastAnchorId = id;
             });
             const wrap = el('span', { class: 'ldc-row-wrap' }, [cb]);
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
@@ -1454,7 +1541,7 @@
         }
 
         return {
-            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes,
+            injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes, clearAnchor,
             buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
             getSortMode, setSortMode, applySortIfNeeded, hasAnyDateMetadata,
             get bar() { return bar; },
@@ -1506,11 +1593,13 @@
                 cb.checked = true;
             }
         });
+        ui.clearAnchor();
     }
 
     function onClearSelection() {
         selection.clear();
         ui.refreshAllCheckboxes();
+        ui.clearAnchor();
     }
 
     async function onDownload() {

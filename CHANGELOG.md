@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-11
+
+### Added
+- **Shift+Click range selection on course checkboxes.** Plain click on
+  a checkbox still toggles that one row, but a subsequent **Shift+Click**
+  on another row now bulk-selects every visible course between the last
+  clicked row (the "anchor") and this one, inclusive. The range is
+  intentionally limited to **the same category** — Shift+Click across
+  categories (e.g. Azure → Microsoft 365) falls through to a normal
+  single-row click. Collapsed / hidden rows are not included.
+- Repeated Shift+Click keeps pivoting around the same anchor (standard
+  Windows Explorer / Outlook behaviour). The anchor is reset by a plain
+  click on any row, or by using the toolbar's `Select all visible` /
+  `Clear selection` buttons.
+- New `selection.addMany(ids)` helper that batches multiple selections
+  into a single change notification, so the range select doesn't churn
+  the toolbar count.
+
 ## [0.4.0] — 2026-05-09
 
 ### Added
@@ -82,7 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lettucebo/LDC-Tools/releases/tag/v0.2.0
