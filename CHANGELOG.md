@@ -26,13 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the toolbar count.
 
 ### Fixed
-- Defer the DOM `checked` sync for Shift-range selection into a
-  `queueMicrotask` so the browser's legacy-canceled-activation step
-  (which runs after our click handler because we `preventDefault`)
-  cannot revert the clicked row's `checked` back to its pre-click
-  value. Without this defer, the clicked row's checkbox would visually
-  appear unchecked even though the selection state correctly included
-  it.
+- Make sure Shift+Click also visually checks the clicked row (the
+  range's last endpoint). Drive Shift-range selection from the
+  `change` event instead of `click` + `preventDefault`: stash the
+  computed range in the click handler and apply it after the browser
+  has committed its natural toggle. The previous attempt that used
+  `preventDefault` + `queueMicrotask` did not reliably defer the DOM
+  `checked` sync past the browser's legacy-canceled-activation
+  revert, which left the clicked row visually unchecked even though
+  the selection state correctly included it.
 
 ## [0.4.0] — 2026-05-09
 

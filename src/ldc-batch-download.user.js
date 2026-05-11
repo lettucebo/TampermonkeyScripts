@@ -1207,6 +1207,16 @@
         let lastAnchorId = null;
         function clearAnchor() { lastAnchorId = null; }
 
+        // Shift+Click delivery: the click handler stashes the computed
+        // range here and lets the browser's natural toggle proceed. The
+        // change handler — which fires AFTER the toggle is committed —
+        // reads this back, force-corrects `cb.checked = true`, and
+        // applies the rest of the range. This avoids any reliance on
+        // preventDefault + microtask timing for the legacy-canceled-
+        // activation revert, which proved unreliable in practice.
+        // Single-threaded JS means there's no real concurrency hazard.
+        let pendingShiftRange = null;
+
         // Compute the inclusive Shift-range between two row ids.
         // Returns an array of row ids in DOM order, or null when the
         // range cannot be established (anchor missing/invisible,
@@ -1266,47 +1276,54 @@
             cb.addEventListener('mousedown', (e) => {
                 if (e.shiftKey) e.preventDefault();
             });
-            // Shift+Click: extend selection from the last-clicked anchor to
-            // this row inclusive, same-category only. We preventDefault on
-            // the click — that cancels both the default toggle AND the
-            // subsequent `change` event, so we can apply our own state.
-            // Anchor is intentionally NOT updated (standard Windows
-            // behaviour: repeated shift-clicks pivot around the same
-            // anchor). Falls through to a normal click when there is no
-            // anchor, the anchor is in a different category, or both
-            // endpoints aren't currently visible.
+            // Shift+Click: stash the computed range so the upcoming
+            // `change` event (which fires after the browser's natural
+            // toggle is committed) can apply it. Crucially, we do NOT
+            // preventDefault here — letting the browser toggle the
+            // clicked checkbox is what lets us avoid fighting the
+            // legacy-canceled-activation revert dance. Same-category
+            // and visibility constraints are enforced by
+            // getRangeBetween; if it returns null we clear the pending
+            // range so the change handler falls through to a normal
+            // single-row click.
             cb.addEventListener('click', (e) => {
-                if (!e.shiftKey) return;
+                if (!e.shiftKey) {
+                    pendingShiftRange = null;
+                    return;
+                }
                 const range = getRangeBetween(lastAnchorId, id);
-                if (!range || range.length === 0) return;
-                e.preventDefault();
-                selection.addMany(range);
-                // The DOM `checked` sync has to run AFTER the browser's
-                // legacy-canceled-activation step. That step is part of the
-                // click event dispatch algorithm: pre-click toggles the
-                // clicked checkbox, our handler preventDefault's, and then
-                // the browser reverts the clicked checkbox's `checked`
-                // back to its pre-click value — which would clobber a
-                // synchronous `cb.checked = true` here for the clicked
-                // row (the other rows in the range are unaffected, hence
-                // the original bug where every row except the clicked
-                // one appeared checked). Microtasks run after the event
-                // dispatch completes and before the next paint, so this
-                // is visually indistinguishable from a synchronous write.
-                queueMicrotask(() => {
-                    for (const rid of range) {
-                        const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
-                        if (other) other.checked = true;
-                    }
-                });
-                try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+                pendingShiftRange = (range && range.length > 0) ? range : null;
+                if (pendingShiftRange) {
+                    try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+                }
             });
             cb.addEventListener('change', (e) => {
                 e.stopPropagation();
+                const range = pendingShiftRange;
+                pendingShiftRange = null;
+                if (range) {
+                    // Shift+Click: always SELECT the entire range,
+                    // including the clicked row. The browser just toggled
+                    // `cb.checked` as part of its natural click activation;
+                    // force it back to `true` no matter which direction
+                    // the toggle went (Shift+Click never deselects, per
+                    // spec). Anchor is intentionally NOT updated, so
+                    // repeat Shift+Clicks keep pivoting on the same
+                    // anchor.
+                    cb.checked = true;
+                    selection.addMany(range);
+                    for (const rid of range) {
+                        if (rid === id) continue;
+                        const other = document.querySelector(`input.ldc-row-checkbox[data-ldc-row-id="${CSS.escape(rid)}"]`);
+                        if (other) other.checked = true;
+                    }
+                    return;
+                }
+                // Plain click (incl. Ctrl/⌘+Click on a checkbox list,
+                // which the browser handles the same way): mirror
+                // `cb.checked` into selection state and update the
+                // anchor for the next potential Shift+Click.
                 if (cb.checked) selection.add(id); else selection.remove(id);
-                // A non-shift toggle (including plain click and Ctrl/⌘+Click)
-                // is what makes this row the new anchor. Shift+Click cancels
-                // the change event upstream, so it never reaches here.
                 lastAnchorId = id;
             });
             const wrap = el('span', { class: 'ldc-row-wrap' }, [cb]);
