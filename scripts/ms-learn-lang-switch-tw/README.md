@@ -14,6 +14,7 @@ English | [繁體中文](./README.zh-TW.md)
 ## Install
 
 👉 **[Install ms-learn-lang-switch-tw.user.js](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-tw/ms-learn-lang-switch-tw.user.js)**
+<br/>💡 _**Ctrl/Cmd-click** (or middle-click) the link above to open it in a new tab — GitHub strips `target="_blank"` from README links so plain clicks navigate this tab away._
 
 You need [Tampermonkey](https://www.tampermonkey.net/) (or a compatible userscript manager) installed in your browser first. Once installed, Tampermonkey will pick up the `@updateURL` / `@downloadURL` from this repo, so **auto-update is enabled** — future versions land automatically.
 

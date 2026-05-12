@@ -18,6 +18,7 @@ The button is semi-transparent by default and becomes fully opaque on hover, so 
 1. Install a userscript manager such as [Tampermonkey](https://www.tampermonkey.net/) (Chrome, Edge, Firefox, Safari).
 2. Click the install link:
    [Install `github-docs-lang-switch-cn.user.js`](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/github-docs-lang-switch-cn/github-docs-lang-switch-cn.user.js)
+   <br/>💡 _**Ctrl/Cmd-click** (or middle-click) the link above to open it in a new tab — GitHub strips `target="_blank"` from README links so plain clicks navigate this tab away._
 3. Confirm the install prompt in Tampermonkey.
 
 Tampermonkey will auto-update the script from this repository's raw URL on its normal update schedule.

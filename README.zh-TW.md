@@ -23,6 +23,8 @@ Tampermonkey 安裝，或點 script 名稱開啟詳細說明。
 | **[ms-learn-lang-switch-cn](./scripts/ms-learn-lang-switch-cn/)** | 在任何 `*.microsoft.com` 頁面一鍵切換英文 (`en-us`) ↔ 簡體中文 (`zh-cn`)。 | [Install](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-cn/ms-learn-lang-switch-cn.user.js) |
 | **[github-docs-lang-switch-cn](./scripts/github-docs-lang-switch-cn/)** | 在 `docs.github.com` 一鍵切換英文 (`en`) ↔ 簡體中文 (`zh`)。 | [Install](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/github-docs-lang-switch-cn/github-docs-lang-switch-cn.user.js) |
 
+> 💡 **小提示**：GitHub 會把 README 連結的 `target="_blank"` 剝掉，直接點會讓當前分頁切走。請對上方 **Install** 連結 **Ctrl/⌘-click**（或中鍵點擊）以新分頁開啟 — Tampermonkey 在新分頁仍會跳出安裝對話框。
+
 > 兩支 `ms-learn-lang-switch-*` script 設計為可並存，浮動按鈕會垂直
 > 堆疊（`zh-CN` 在 `top:6px`、`zh-TW` 在 `top:40px`），可同時安裝。
 

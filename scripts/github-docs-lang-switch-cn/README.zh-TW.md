@@ -18,6 +18,7 @@
 1. 先安裝使用者腳本管理器，例如 [Tampermonkey](https://www.tampermonkey.net/)（支援 Chrome、Edge、Firefox、Safari）。
 2. 點擊安裝連結：
    [安裝 `github-docs-lang-switch-cn.user.js`](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/github-docs-lang-switch-cn/github-docs-lang-switch-cn.user.js)
+   <br/>💡 _對上方連結 **Ctrl/⌘-click**（或中鍵點擊）以新分頁開啟 — GitHub 會把 README 連結的 `target="_blank"` 剝掉，直接點會讓當前分頁切走。_
 3. 在 Tampermonkey 的安裝畫面按下確認。
 
 Tampermonkey 後續會依照預設更新排程，從這個 repo 的 raw URL 自動更新腳本。

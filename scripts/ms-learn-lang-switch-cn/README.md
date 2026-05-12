@@ -16,6 +16,7 @@ The button is mostly transparent (opacity `0.3`) until hovered, so it stays out 
 ## Install
 
 [![Install](https://img.shields.io/badge/Tampermonkey-Install-00485B?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-cn/ms-learn-lang-switch-cn.user.js)
+<br/>💡 _**Ctrl/Cmd-click** (or middle-click) the badge above to open it in a new tab — GitHub strips `target="_blank"` from README links so plain clicks navigate this tab away._
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) (or a compatible userscript manager such as Violentmonkey).
 2. Open the install link above — Tampermonkey will pick up the `.user.js` file and show the install prompt.

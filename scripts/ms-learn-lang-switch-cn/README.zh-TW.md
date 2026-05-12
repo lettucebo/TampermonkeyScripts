@@ -16,6 +16,7 @@
 ## 安裝方式
 
 [![安裝](https://img.shields.io/badge/Tampermonkey-Install-00485B?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-cn/ms-learn-lang-switch-cn.user.js)
+<br/>💡 _對上方安裝徽章 **Ctrl/⌘-click**（或中鍵點擊）以新分頁開啟 — GitHub 會把 README 連結的 `target="_blank"` 剝掉，直接點會讓當前分頁切走。_
 
 1. 先安裝 [Tampermonkey](https://www.tampermonkey.net/)（或相容的使用者腳本管理器，例如 Violentmonkey）。
 2. 點擊上方安裝連結 —— Tampermonkey 會自動辨識 `.user.js` 並彈出安裝視窗。

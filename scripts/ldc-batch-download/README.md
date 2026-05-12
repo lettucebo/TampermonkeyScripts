@@ -65,6 +65,7 @@ which Firefox does not currently support.
 2. Click the link below; Tampermonkey will pop up an install dialog:
 
    👉 **[Install ldc-batch-download.user.js](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ldc-batch-download/ldc-batch-download.user.js)**
+   <br/>💡 _**Ctrl/Cmd-click** (or middle-click) the link above to open it in a new tab — GitHub strips `target="_blank"` so plain clicks navigate this tab away._
 
 3. Click **Install**
 4. Open <https://learningdownloadcenter.microsoft.com/>.

@@ -14,6 +14,7 @@
 ## 安裝
 
 👉 **[安裝 ms-learn-lang-switch-tw.user.js](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-tw/ms-learn-lang-switch-tw.user.js)**
+<br/>💡 _對上方連結 **Ctrl/⌘-click**（或中鍵點擊）以新分頁開啟 — GitHub 會把 README 連結的 `target="_blank"` 剝掉，直接點會讓當前分頁切走。_
 
 請先在瀏覽器中安裝 [Tampermonkey](https://www.tampermonkey.net/)（或其他相容的使用者腳本管理器）。安裝後，Tampermonkey 會讀取 `@updateURL` / `@downloadURL`，所以**已啟用自動更新**，未來版本會自動套用。
 

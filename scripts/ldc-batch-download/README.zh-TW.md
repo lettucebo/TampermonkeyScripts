@@ -60,6 +60,7 @@
 2. 點以下連結，Tampermonkey 會自動跳出安裝對話框：
 
    👉 **[安裝 ldc-batch-download.user.js](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ldc-batch-download/ldc-batch-download.user.js)**
+   <br/>💡 _對上方連結 **Ctrl/⌘-click**（或中鍵點擊）以新分頁開啟 — GitHub 會把 `target="_blank"` 剝掉，直接點會讓當前分頁切走。_
 
 3. 點 **Install**
 4. 打開 <https://learningdownloadcenter.microsoft.com/>

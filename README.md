@@ -25,6 +25,8 @@ script's README for full details.
 | **[ms-learn-lang-switch-cn](./scripts/ms-learn-lang-switch-cn/)** | One-click toggle between English (`en-us`) and Simplified Chinese (`zh-cn`) on any `*.microsoft.com` page. | [Install](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ms-learn-lang-switch-cn/ms-learn-lang-switch-cn.user.js) |
 | **[github-docs-lang-switch-cn](./scripts/github-docs-lang-switch-cn/)** | One-click toggle between English (`en`) and Simplified Chinese (`zh`) on `docs.github.com`. | [Install](https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/github-docs-lang-switch-cn/github-docs-lang-switch-cn.user.js) |
 
+> 💡 **Tip**: GitHub strips `target="_blank"` from README links, so plain clicks navigate this tab away. **Ctrl/Cmd-click** (or middle-click) on the **Install** links above to open them in a new tab — Tampermonkey will still pick up the install dialog there.
+
 > The two `ms-learn-lang-switch-*` scripts are designed to coexist; their
 > floating buttons are stacked vertically (`zh-CN` at `top:6px`, `zh-TW`
 > at `top:40px`) so you can install both.
