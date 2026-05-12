@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
-// @namespace    https://github.com/lettucebo/LDC-Tools
-// @version      0.5.0
+// @namespace    https://github.com/lettucebo/TampermonkeyScripts
+// @version      0.6.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -14,10 +14,10 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @license      MIT
-// @homepageURL  https://github.com/lettucebo/LDC-Tools
-// @supportURL   https://github.com/lettucebo/LDC-Tools/issues
-// @updateURL    https://raw.githubusercontent.com/lettucebo/LDC-Tools/main/src/ldc-batch-download.user.js
-// @downloadURL  https://raw.githubusercontent.com/lettucebo/LDC-Tools/main/src/ldc-batch-download.user.js
+// @homepageURL  https://github.com/lettucebo/TampermonkeyScripts/tree/main/scripts/ldc-batch-download
+// @supportURL   https://github.com/lettucebo/TampermonkeyScripts/issues
+// @updateURL    https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ldc-batch-download/ldc-batch-download.user.js
+// @downloadURL  https://raw.githubusercontent.com/lettucebo/TampermonkeyScripts/main/scripts/ldc-batch-download/ldc-batch-download.user.js
 // ==/UserScript==
 
 /* eslint-disable no-undef */

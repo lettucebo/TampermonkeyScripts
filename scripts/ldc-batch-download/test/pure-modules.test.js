@@ -1,5 +1,5 @@
 // Quick standalone smoke-tests for the pure modules.
-// Run with: node test/pure-modules.test.js
+// Run with: node scripts/ldc-batch-download/test/pure-modules.test.js
 // The userscript file uses unsafeWindow / Tampermonkey APIs that don't exist
 // in Node, so we hand-port the pure parser/sanitizer here. Update both when
 // the implementation changes.

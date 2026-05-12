@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-12
+
+### Changed
+- **Repo restructured**: This script moved from `src/ldc-batch-download.user.js` to `scripts/ldc-batch-download/ldc-batch-download.user.js` as part of turning `lettucebo/LDC-Tools` into a multi-script Tampermonkey collection at `lettucebo/TampermonkeyScripts`.
+- Repository renamed from `LDC-Tools` to `TampermonkeyScripts`.
+- `@namespace`, `@homepageURL`, `@supportURL`, `@updateURL`, `@downloadURL` updated to point at the new repo path.
+- Per-script CHANGELOG / README / tests now live alongside the userscript in `scripts/ldc-batch-download/`.
+
+### Upgrade notes
+- **Existing 0.5.0 installs will not auto-update**: the previous `@updateURL` (`.../LDC-Tools/main/src/ldc-batch-download.user.js`) no longer resolves to a file once 0.6.0 moves the source. Please manually re-install from the new URL on the README to receive 0.6.0+ updates.
+
 ## [0.5.0] — 2026-05-11
 
 ### Added
@@ -111,8 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/LDC-Tools/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/lettucebo/LDC-Tools/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/lettucebo/LDC-Tools/releases/tag/v0.2.0
+[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.6.0...HEAD
+[0.6.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.5.0...ldc-batch-download-v0.6.0
+[0.5.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/lettucebo/TampermonkeyScripts/releases/tag/v0.2.0
