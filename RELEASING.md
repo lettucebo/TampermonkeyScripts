@@ -201,6 +201,7 @@ git push origin ldc-batch-download-v0.8.2
 $changelog = Get-Content scripts\ldc-batch-download\CHANGELOG.md -Raw
 $start = $changelog.IndexOf('## [0.8.2]')
 $end   = $changelog.IndexOf('## [0.7.1]')
+if ($end -lt 0) { $end = $changelog.Length }
 $notes = $changelog.Substring($start, $end - $start).TrimEnd()
 $notes | Out-File -FilePath release-notes.tmp -Encoding utf8
 gh release create ldc-batch-download-v0.8.2 `
