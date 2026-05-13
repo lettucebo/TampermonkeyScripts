@@ -41,7 +41,7 @@ Per-script tags use the form `<script-id>-v<X.Y.Z>`, for example:
    ```bash
    git checkout main
    git pull --ff-only
-   git tag -a <script-id>-vX.Y.Z -m "<script-id> vX.Y.Z — <one-line summary>"
+   git tag -a <script-id>-vX.Y.Z -m "vX.Y.Z"
    git push origin <script-id>-vX.Y.Z
    ```
 
@@ -52,7 +52,7 @@ Per-script tags use the form `<script-id>-v<X.Y.Z>`, for example:
    ```bash
    gh release create <script-id>-vX.Y.Z \
      --target main \
-     --title "<script-id> vX.Y.Z — <one-line summary>" \
+     --title "vX.Y.Z" \
      --notes-from-tag=false \
      --notes-file <(awk '/^## \[X\.Y\.Z\]/{flag=1;print;next} /^## \[/{flag=0} flag' scripts/<script-id>/CHANGELOG.md) \
      --latest
@@ -75,12 +75,12 @@ Per-script tags use the form `<script-id>-v<X.Y.Z>`, for example:
 ### `ldc-batch-download` v0.6.0
 
 ```bash
-git tag -a ldc-batch-download-v0.6.0 -m "ldc-batch-download v0.6.0 — repo restructure"
+git tag -a ldc-batch-download-v0.6.0 -m "v0.6.0"
 git push origin ldc-batch-download-v0.6.0
 
 gh release create ldc-batch-download-v0.6.0 \
   --target main \
-  --title "ldc-batch-download v0.6.0 — repo restructure" \
+  --title "v0.6.0" \
   --notes-from-tag=false \
   --notes-file <(awk '/^## \[0\.6\.0\]/{flag=1;print;next} /^## \[/{flag=0} flag' scripts/ldc-batch-download/CHANGELOG.md) \
   --latest
@@ -89,12 +89,12 @@ gh release create ldc-batch-download-v0.6.0 \
 ### `ms-learn-lang-switch-tw` v0.3.0
 
 ```bash
-git tag -a ms-learn-lang-switch-tw-v0.3.0 -m "ms-learn-lang-switch-tw v0.3.0 — moved from gist into repo"
+git tag -a ms-learn-lang-switch-tw-v0.3.0 -m "v0.3.0"
 git push origin ms-learn-lang-switch-tw-v0.3.0
 
 gh release create ms-learn-lang-switch-tw-v0.3.0 \
   --target main \
-  --title "ms-learn-lang-switch-tw v0.3.0 — moved from gist into repo" \
+  --title "v0.3.0" \
   --notes-from-tag=false \
   --notes-file <(awk '/^## \[0\.3\.0\]/{flag=1;print;next} /^## \[/{flag=0} flag' scripts/ms-learn-lang-switch-tw/CHANGELOG.md)
 ```
