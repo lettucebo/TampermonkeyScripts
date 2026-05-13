@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.8.1
+// @version      0.8.2
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -14,6 +14,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM.getValue
 // @grant        GM.setValue
+// @grant        GM_info
 // @license      MIT
 // @homepageURL  https://github.com/lettucebo/TampermonkeyScripts/tree/main/scripts/ldc-batch-download
 // @supportURL   https://github.com/lettucebo/TampermonkeyScripts/issues
@@ -40,6 +41,8 @@
     const RETRY_DELAYS_MS = [1000, 3000, 9000];
     const TOKEN_REFRESH_MARGIN_SEC = 60;
     const TOKEN_REFRESH_TIMEOUT_MS = 30000;
+    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.8.2';
+    const SCRIPT_AUTHOR = 'Money Yu';
 
     // ─────────────────────────────────────────────────────────────────────────
     // 1. Token interception (must run synchronously at document-start)
@@ -963,6 +966,14 @@
             #ldc-bar .ldc-folder { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.95; }
             #ldc-bar .ldc-primary { background: #ffd700; color: #333; font-weight: 600; }
             #ldc-bar .ldc-primary:hover:not(:disabled) { background: #ffea4d; }
+            #ldc-bar .ldc-info {
+                cursor: help;
+                font-size: 16px;
+                opacity: 0.85;
+                padding: 0 2px;
+                user-select: none;
+            }
+            #ldc-bar .ldc-info:hover { opacity: 1; }
 
             .ldc-row-checkbox {
                 width: 18px; height: 18px;
@@ -1176,7 +1187,7 @@
         }
 
         // Control bar
-        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, btnShowProgress, lblFolder, lblCount, selSort;
+        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, btnShowProgress, infoBadge, lblFolder, lblCount, selSort;
 
         function buildBar() {
             bar = el('div', { id: 'ldc-bar' });
@@ -1194,7 +1205,12 @@
             btnDownload = el('button', { class: 'ldc-primary', text: '⬇ Download selected', disabled: true });
             btnCancel = el('button', { text: '⏹ Cancel', style: { display: 'none' } });
             btnShowProgress = el('button', { text: '📊 Show progress', title: 'Re-open the download progress panel' });
-            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel, btnShowProgress);
+            infoBadge = el('span', {
+                class: 'ldc-info',
+                text: 'ℹ️',
+                title: `Author: ${SCRIPT_AUTHOR}\nVersion: ${SCRIPT_VERSION}`,
+            });
+            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel, btnShowProgress, infoBadge);
             return bar;
         }
 

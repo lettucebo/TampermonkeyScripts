@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-05-13
+
+### Added
+- Info badge (`ℹ️`) at the rightmost of the toolbar. Hover to see
+  the author (`Money Yu`) and the currently-installed script version,
+  sourced live from `GM_info.script.version` so the tooltip stays in
+  sync with the userscript's `@version` automatically.
+
 ## [0.8.1] — 2026-05-13
 
 ### Added
@@ -224,7 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.1...HEAD
+[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.2...HEAD
+[0.8.2]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.1...ldc-batch-download-v0.8.2
 [0.8.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.0...ldc-batch-download-v0.8.1
 [0.8.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.7.1...ldc-batch-download-v0.8.0
 [0.7.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.7.0...ldc-batch-download-v0.7.1
