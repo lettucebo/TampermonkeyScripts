@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-13
+
+### Added
+- `@icon` metadata pointing at Microsoft's favicon
+  (`https://www.google.com/s2/favicons?sz=64&domain=microsoft.com`),
+  matching the `ms-learn-lang-switch-*` userscripts in this repo so
+  the LDC entry in the Tampermonkey dashboard / installed-scripts
+  list now shows a visual identifier instead of the generic
+  placeholder.
+
+## [0.8.0] — 2026-05-13
+
+### Added
+- **Status badge in the progress panel header.** The fixed
+  `Download progress` title is now status-aware:
+  `⏳ Downloading…` while a batch is in flight, `✓ All done` when
+  everything succeeded, `⚠ Done with N failed` when finished with
+  failures, and `⏸ Paused — <reason>` while paused (e.g. on a 401
+  token expiry or revoked folder permission). Answers the
+  "is the batch finished yet?" question at a glance instead of
+  forcing the user to mentally compare `211/614 files` against
+  `total`.
+- **Per-status chip row in the summary.** Underneath the totals
+  line (`211/614 files · 2.97 GB / 10.9 GB`) is a new row of
+  colour-matched chips: `0 failed`, `4 downloading`, `2 retrying`,
+  `264 pending`, `135 skipped`. `failed` is always shown (so a
+  green-zero is visible and reassuring); the rest are shown when
+  non-zero, plus `downloading` is shown while the batch is still
+  running. Chips reuse the existing `.ldc-status-*` colour palette
+  for visual consistency with the row badges.
+- **Smarter `... and N more` label.** When the visible 200 rows
+  overflow, the trailer now names what's hidden — e.g.
+  `... and 414 more done` when the hidden tail is uniform, or
+  `... and 414 more (300 done · 114 pending)` when mixed. Top two
+  statuses by count are shown.
+
+### Changed
+- **Progress list now sorts active and problematic items to the
+  top.** The visible 200 rows are ordered `failed → retrying →
+  downloading → pending → skipped → done`. Before this change,
+  tasks were iterated in worker-queue order, so early-completed
+  `done` rows filled the visible 200 and anything still running /
+  failing was pushed off the bottom into `... and N more`. On a
+  600-file batch this meant the panel could show a wall of `done`
+  while live activity was invisible. The sort runs on a *copy* of
+  `state.tasks`; the orchestrator's worker loop still walks the
+  original array by index, so retry / skip-if-exists semantics are
+  unaffected.
+
+## [0.7.1] — 2026-05-13
+
+### Fixed
+- **`Name is not allowed.` error from `getDirectoryHandle` on Chromium.**
+  Some LDC course titles silently end in a `U+200B` (zero-width space)
+  — e.g. `AI-3008 Extract insights from visual data on Azure​` or
+  `AI-3003 Develop natural language solutions in Azure​`. Recent
+  Chromium versions reject such names in the File System Access API,
+  so the affected courses' folders could not be created and every
+  file in them failed. The path sanitizer now strips all known
+  invisible / zero-width / bidi-format Unicode characters
+  (`U+00AD`, `U+200B`–`U+200F`, `U+202A`–`U+202E`, `U+2060`–`U+2064`,
+  `U+2066`–`U+2069`, `U+FEFF`) so the resulting folder names match
+  the user-visible spelling (`…on Azure`).
+- `DEL` (`U+007F`) and the C1 control range (`U+0080`–`U+009F`) are
+  now treated the same as the existing C0 controls and replaced with
+  `-` instead of being passed through unchanged.
+
+### Changed
+- `fsaWriter.getDirHandle` and `fsaWriter.writeStream` now include
+  the offending segment in the rethrown error message (e.g.
+  `Name is not allowed. (segment: "…Azure\u200b")`). Failed-files
+  rows in the progress panel + `Copy errors` output therefore name
+  exactly which directory or file segment the underlying API
+  rejected, instead of just `Name is not allowed.` with no
+  identifying context.
+
+### Upgrade notes
+- If you ran an earlier version of this script on an **older
+  Chromium build** that did not yet reject `U+200B`, you may have
+  on-disk folders whose names end in an invisible zero-width
+  character (e.g. `AI-3008 Extract insights from visual data on
+  Azure​/…`). Under 0.7.1 the script writes to the cleaned-up name
+  (`…Azure/…`) instead, so re-running the batch will create a *new*
+  sibling folder and re-download every file. To keep your existing
+  files, rename the old folder in your file manager to drop the
+  trailing invisible character (it's not visible, but tab-complete
+  / paste-into-rename will reveal it) before re-running.
+
+## [0.7.0] — 2026-05-13
+
+### Added
+- **`📊 Show progress` toolbar button.** Clicking the panel's `✕`
+  used to hide the floating download-progress panel with no way to
+  bring it back until the next batch started. A new always-visible
+  `📊 Show progress` button now lives on the right side of the blue
+  toolbar (next to `⏹ Cancel`) and re-opens the panel on demand,
+  preserving the task list / progress bar / summary across hide-show
+  cycles.
+- Empty-state placeholder ("No downloads yet.") inside the progress
+  panel, shown when the button is clicked before any batch has run,
+  so the freshly opened panel isn't blank.
+
 ## [0.6.0] — 2026-05-12
 
 ### Changed
@@ -122,7 +224,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.6.0...HEAD
+[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.1...HEAD
+[0.8.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.0...ldc-batch-download-v0.8.1
+[0.8.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.7.1...ldc-batch-download-v0.8.0
+[0.7.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.7.0...ldc-batch-download-v0.7.1
+[0.7.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.6.0...ldc-batch-download-v0.7.0
 [0.6.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.5.0...ldc-batch-download-v0.6.0
 [0.5.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.3.0...v0.4.0

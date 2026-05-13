@@ -2,11 +2,12 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.6.0
+// @version      0.8.1
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
 // @match        https://learningdownloadcenter.microsoft.com/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=microsoft.com
 // @run-at       document-start
 // @grant        unsafeWindow
 // @grant        GM_addStyle
@@ -397,7 +398,8 @@
 
     const pathSanitizer = (() => {
         const WIN_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
-        const ILLEGAL = /[<>:"/\\|?*\x00-\x1F]/g;
+        const ILLEGAL = /[<>:"/\\|?*\x00-\x1F\x7F-\x9F]/g;
+        const INVISIBLE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 
         function shortHash(s) {
             // FNV-1a 32-bit, base36, 8 chars max (deterministic, no crypto needed)
@@ -411,7 +413,8 @@
 
         function sanitizeSegment(name) {
             if (!name) return '_';
-            let s = String(name).replace(ILLEGAL, '-');
+            let s = String(name).replace(INVISIBLE, '');
+            s = s.replace(ILLEGAL, '-');
             s = s.replace(/[\s.]+$/g, '').replace(/^\s+/, '');
             if (!s) s = '_';
             if (WIN_RESERVED.test(s)) s = '_' + s;
@@ -595,7 +598,8 @@
                 try { dir = await dir.getDirectoryHandle(safe, { create: true }); }
                 catch (e) {
                     if (e && e.name === 'NotAllowedError') throw new FsaPermissionError('Folder permission was revoked. Please choose the folder again.');
-                    throw e;
+                    const msg = e && e.message ? e.message : String(e);
+                    throw new Error(`${msg} (segment: ${JSON.stringify(safe)})`);
                 }
             }
             return dir;
@@ -619,7 +623,8 @@
             try { fh = await dirHandle.getFileHandle(safe, { create: true }); }
             catch (e) {
                 if (e && e.name === 'NotAllowedError') throw new FsaPermissionError('Folder permission was revoked. Please choose the folder again.');
-                throw e;
+                const msg = e && e.message ? e.message : String(e);
+                throw new Error(`${msg} (segment: ${JSON.stringify(safe)})`);
             }
             const writable = await fh.createWritable();
             try {
@@ -1013,6 +1018,18 @@
                 padding: 8px 12px;
                 border-bottom: 1px solid #f0f0f0;
             }
+            #ldc-progress .ldc-progress-statline {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                margin-top: 4px;
+                align-items: center;
+            }
+            #ldc-progress .ldc-progress-statline .ldc-chip {
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: 3px;
+            }
             #ldc-progress .ldc-progress-bar {
                 height: 6px;
                 background: #e0e0e0;
@@ -1159,7 +1176,7 @@
         }
 
         // Control bar
-        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, lblFolder, lblCount, selSort;
+        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, btnShowProgress, lblFolder, lblCount, selSort;
 
         function buildBar() {
             bar = el('div', { id: 'ldc-bar' });
@@ -1176,7 +1193,8 @@
             lblCount = el('span', { class: 'ldc-status', text: '0 selected' });
             btnDownload = el('button', { class: 'ldc-primary', text: '⬇ Download selected', disabled: true });
             btnCancel = el('button', { text: '⏹ Cancel', style: { display: 'none' } });
-            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel);
+            btnShowProgress = el('button', { text: '📊 Show progress', title: 'Re-open the download progress panel' });
+            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel, btnShowProgress);
             return bar;
         }
 
@@ -1514,11 +1532,12 @@
         }
 
         // Progress panel
-        let panel, panelHeader, panelSummary, panelBar, panelList;
+        let panel, panelHeader, panelTitle, panelSummary, panelBar, panelList;
         function buildPanel() {
             panel = el('div', { id: 'ldc-progress', class: 'ldc-hidden' });
+            panelTitle = el('span', { class: 'ldc-progress-title', text: 'Download progress' });
             panelHeader = el('header', {}, [
-                el('span', { class: 'ldc-progress-title', text: 'Download progress' }),
+                panelTitle,
                 el('button', { text: 'Copy errors', onClick: copyErrors }),
                 el('button', { text: '✕', onClick: () => panel.classList.add('ldc-hidden') }),
             ]);
@@ -1547,27 +1566,89 @@
             requestAnimationFrame(() => { renderPending = false; renderPanel(); });
         }
 
+        const STATUS_RANK = { failed: 0, retrying: 1, downloading: 2, pending: 3, skipped: 4, done: 5 };
+
+        function statusChip(label, statusClass) {
+            return el('span', { class: `ldc-chip ldc-status-${statusClass}`, text: label });
+        }
+
         function renderPanel() {
             const s = orchestrator.state;
-            if (!s) return;
+            if (!s) {
+                panelTitle.textContent = 'Download progress';
+                panelBar.firstChild.style.width = '0%';
+                panelSummary.innerHTML = '';
+                panelList.innerHTML = '';
+                panelList.appendChild(el('div', { class: 'ldc-task', text: 'No downloads yet.' }));
+                return;
+            }
+
+            // Count statuses not already on state (downloading / retrying / pending).
+            // state.done already includes skipped (orchestrator increments both); state.failed
+            // and state.skipped are direct counters.
+            let downloading = 0, retrying = 0, pending = 0;
+            for (const t of s.tasks) {
+                if (t.status === 'downloading') downloading++;
+                else if (t.status === 'retrying') retrying++;
+                else if (t.status === 'pending') pending++;
+            }
+
+            // Header status badge — derived purely from existing state.
+            const terminal = s.done + s.failed;
+            const ended = s.total > 0 && terminal >= s.total;
+            let title;
+            if (s.paused) title = `⏸ Paused — ${s.pauseReason || ''}`.trim();
+            else if (ended) title = s.failed > 0 ? `⚠ Done with ${s.failed} failed` : '✓ All done';
+            else title = '⏳ Downloading…';
+            panelTitle.textContent = title;
+
+            // Progress bar.
             const pct = s.bytesTotal ? Math.min(100, (s.bytesDone / s.bytesTotal) * 100) : 0;
             panelBar.firstChild.style.width = `${pct.toFixed(1)}%`;
-            panelSummary.textContent = `${s.done}/${s.total} files · ${fmtBytes(s.bytesDone)} / ${fmtBytes(s.bytesTotal)}` +
-                (s.failed ? ` · ${s.failed} failed` : '') +
-                (s.skipped ? ` · ${s.skipped} skipped` : '') +
-                (s.paused ? ` · paused` : '');
-            // Render tasks (limit to first 200 for perf)
-            const list = s.tasks.slice(0, 200);
+
+            // Two-line summary: totals on line 1, status chips on line 2.
+            panelSummary.innerHTML = '';
+            panelSummary.appendChild(el('div', { class: 'ldc-progress-totals',
+                text: `${s.done}/${s.total} files · ${fmtBytes(s.bytesDone)} / ${fmtBytes(s.bytesTotal)}`
+            }));
+            const statline = el('div', { class: 'ldc-progress-statline' });
+            statline.appendChild(statusChip(`${s.failed} failed`, 'failed'));
+            if (downloading > 0 || (!ended && !s.paused)) statline.appendChild(statusChip(`${downloading} downloading`, 'downloading'));
+            if (retrying > 0) statline.appendChild(statusChip(`${retrying} retrying`, 'retrying'));
+            if (pending > 0) statline.appendChild(statusChip(`${pending} pending`, 'pending'));
+            if (s.skipped > 0) statline.appendChild(statusChip(`${s.skipped} skipped`, 'skipped'));
+            panelSummary.appendChild(statline);
+
+            // Sort a *copy* of tasks for display — never mutate state.tasks since the orchestrator
+            // worker loop walks the original array by index.
+            const sorted = [...s.tasks].sort((a, b) => {
+                const ra = STATUS_RANK[a.status];
+                const rb = STATUS_RANK[b.status];
+                return (ra === undefined ? 99 : ra) - (rb === undefined ? 99 : rb);
+            });
+            const visible = sorted.slice(0, 200);
             panelList.innerHTML = '';
-            for (const t of list) {
+            for (const t of visible) {
                 const row = el('div', { class: 'ldc-task' }, [
                     el('span', { class: 'ldc-task-name', text: t.fileName, title: `${t.parentDir}/${t.subDir}/${t.fileName}` }),
                     el('span', { class: `ldc-task-status ldc-status-${t.status}`, text: t.status }),
                 ]);
                 panelList.appendChild(row);
             }
-            if (s.tasks.length > 200) {
-                panelList.appendChild(el('div', { class: 'ldc-task', text: `... and ${s.tasks.length - 200} more` }));
+            if (sorted.length > 200) {
+                // Describe the hidden tail so "... and N more" isn't opaque.
+                const hidden = sorted.slice(200);
+                const counts = {};
+                for (const t of hidden) counts[t.status] = (counts[t.status] || 0) + 1;
+                const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                let label;
+                if (entries.length === 1) {
+                    label = `... and ${hidden.length} more ${entries[0][0]}`;
+                } else {
+                    const top2 = entries.slice(0, 2).map(([k, v]) => `${v} ${k}`).join(' · ');
+                    label = `... and ${hidden.length} more (${top2})`;
+                }
+                panelList.appendChild(el('div', { class: 'ldc-task', text: label }));
             }
         }
 
@@ -1581,6 +1662,7 @@
             get btnClear() { return btnClear; },
             get btnDownload() { return btnDownload; },
             get btnCancel() { return btnCancel; },
+            get btnShowProgress() { return btnShowProgress; },
             get lblFolder() { return lblFolder; },
             get selSort() { return selSort; },
         };
@@ -1718,6 +1800,10 @@
         ui.btnClear.addEventListener('click', onClearSelection);
         ui.btnDownload.addEventListener('click', onDownload);
         ui.btnCancel.addEventListener('click', onCancel);
+        ui.btnShowProgress.addEventListener('click', () => {
+            ui.showPanel();
+            ui.renderPanel();
+        });
         ui.selSort.addEventListener('change', async () => {
             const mode = ui.selSort.value;
             ui.setSortMode(mode);

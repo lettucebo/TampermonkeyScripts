@@ -87,7 +87,8 @@ const courseParser = (() => {
 const MAX_FILENAME_LEN = 150;
 const pathSanitizer = (() => {
     const WIN_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
-    const ILLEGAL = /[<>:"/\\|?*\x00-\x1F]/g;
+    const ILLEGAL = /[<>:"/\\|?*\x00-\x1F\x7F-\x9F]/g;
+    const INVISIBLE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
     function shortHash(s) {
         let h = 0x811c9dc5;
         for (let i = 0; i < s.length; i++) {
@@ -98,7 +99,8 @@ const pathSanitizer = (() => {
     }
     function sanitizeSegment(name) {
         if (!name) return '_';
-        let s = String(name).replace(ILLEGAL, '-');
+        let s = String(name).replace(INVISIBLE, '');
+        s = s.replace(ILLEGAL, '-');
         s = s.replace(/[\s.]+$/g, '').replace(/^\s+/, '');
         if (!s) s = '_';
         if (WIN_RESERVED.test(s)) s = '_' + s;
@@ -201,6 +203,18 @@ eq(courseParser.canonicalCourseDirName('AZ-040T00: Title/file.pdf'),
 // Unicode preservation
 eq(pathSanitizer.sanitizeSegment('中文檔名.txt'), '中文檔名.txt', 'CJK preserved');
 eq(pathSanitizer.sanitizeSegment('café.pdf'), 'café.pdf', 'accented Latin preserved');
+
+// Invisible / zero-width Unicode chars (0.7.1: fixes "Name is not allowed" in Chromium)
+eq(pathSanitizer.sanitizeSegment('AI-3008 Extract insights from visual data on Azure\u200B'),
+    'AI-3008 Extract insights from visual data on Azure',
+    'trailing ZWSP stripped (real LDC bug case from AI-3008)');
+eq(pathSanitizer.sanitizeSegment('a\u200Bb'), 'ab', 'ZWSP in middle deleted (not turned into -)');
+eq(pathSanitizer.sanitizeSegment('a\u200Cb'), 'ab', 'ZWNJ deleted');
+eq(pathSanitizer.sanitizeSegment('a\u200Eb'), 'ab', 'LRM deleted');
+eq(pathSanitizer.sanitizeSegment('a\uFEFFb'), 'ab', 'BOM / ZWNBSP deleted');
+eq(pathSanitizer.sanitizeSegment('\u200B\u200B\u200B'), '_', 'all-invisible name collapses to _');
+eq(pathSanitizer.sanitizeSegment('name\u00ADbreak.txt'), 'namebreak.txt', 'soft hyphen deleted');
+eq(pathSanitizer.sanitizeSegment('name\u007Fx'), 'name-x', 'DEL (U+007F) replaced with - (treated as control, not invisible-format)');
 
 // Path-traversal baseline. The trailing-dot strip + empty-fallback in sanitizeSegment
 // happens to neutralise `..` to `_`, which is a safer default than letting it through.
