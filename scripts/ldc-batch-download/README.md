@@ -14,7 +14,7 @@ each one has to be opened individually. This userscript adds, on top of the
 original site:
 
 - A ✅ checkbox next to every course row
-- A header toolbar: pick folder / select all / clear / download
+- A header toolbar: pick folder / select all / clear / download / 📊 show progress
 - A floating progress panel (with retry-on-failure and copy-error-list)
 - A pre-flight confirmation dialog (course count / file count / total size /
   destination)
