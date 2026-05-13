@@ -4,6 +4,21 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-13
+
+### Changed
+- **Accessibility**: the toggle button is now a real `<button>`
+  element (previously a `<div>` with an `onclick` handler), so it's
+  reachable via **Tab** and activated with **Enter/Space**. Added an
+  `aria-label` that announces the direction of the switch (e.g.
+  "Switch to Simplified Chinese (zh-cn)"). The button also gains a
+  visible white `:focus` outline so keyboard users can see where
+  they are. Mouse / hover behaviour is unchanged.
+- **Metadata**: `@run-at` is now explicitly `document-end` (this
+  pins the script's existing behaviour — the IIFE already relies on
+  `document.body` being available — and prevents accidental drift if
+  a future change introduces head-time work).
+
 ## [0.3.0] — 2026-05-12
 
 ### Added
